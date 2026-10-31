@@ -1,0 +1,260 @@
+package com.fujisim.cam
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+private fun f(vararg v: Float): FloatArray = v
+
+/**
+ * Colour "personality" of a film simulation. Hue bands are R, Y, G, C, B, M.
+ * hue = shift in degrees, bandSat = saturation multiplier, bandLum = brightness offset for saturated colours.
+ */
+class FilmParams(
+    val sat: Float = 1f,
+    val contrast: Float = 0f,
+    val lift: Float = 0f,
+    val hue: FloatArray = FloatArray(6),
+    val bandSat: FloatArray = f(1f, 1f, 1f, 1f, 1f, 1f),
+    val bandLum: FloatArray = FloatArray(6),
+    val shadowTint: FloatArray = FloatArray(3),
+    val highTint: FloatArray = FloatArray(3),
+    val mono: Boolean = false,
+    val monoW: FloatArray = f(0.299f, 0.587f, 0.114f),
+    val monoTone: FloatArray = f(1f, 1f, 1f),
+)
+
+enum class FilmSim(val label: String, val p: FilmParams) {
+    PROVIA("Provia / Standard", FilmParams(sat = 1.05f, contrast = 0.15f)),
+    VELVIA("Velvia / Vivid", FilmParams(
+        sat = 1.25f, contrast = 0.35f,
+        hue = f(-4f, 0f, 4f, 0f, -3f, 0f),
+        bandSat = f(1.1f, 1.05f, 1.12f, 1.1f, 1.12f, 1.1f),
+        bandLum = f(-0.02f, 0f, -0.04f, -0.02f, -0.06f, 0f))),
+    ASTIA("Astia / Soft", FilmParams(
+        sat = 1.1f, contrast = 0.05f,
+        hue = f(2f, 0f, 0f, 0f, 0f, 0f),
+        bandSat = f(0.95f, 0.95f, 1.05f, 1.1f, 1.15f, 1f),
+        bandLum = f(0.02f, 0.02f, 0f, 0f, -0.02f, 0f),
+        highTint = f(0.005f, 0f, -0.005f))),
+    CLASSIC_CHROME("Classic Chrome", FilmParams(
+        sat = 0.8f, contrast = 0.25f, lift = 0.015f,
+        hue = f(5f, -4f, -12f, 0f, -8f, 0f),
+        bandSat = f(0.85f, 0.75f, 0.65f, 0.85f, 0.8f, 0.7f),
+        bandLum = f(-0.02f, 0f, -0.03f, -0.02f, -0.07f, 0f),
+        shadowTint = f(-0.01f, 0.002f, 0.01f),
+        highTint = f(0.01f, 0.004f, -0.008f))),
+    REALA_ACE("Reala Ace", FilmParams(
+        sat = 1.05f, contrast = 0.22f,
+        bandSat = f(1f, 1f, 0.95f, 1.05f, 1.05f, 1f))),
+    PRO_NEG_HI("Pro Neg. Hi", FilmParams(
+        sat = 0.92f, contrast = 0.2f,
+        hue = f(3f, 0f, 0f, 0f, 0f, 0f),
+        bandSat = f(0.92f, 0.9f, 0.9f, 0.95f, 0.95f, 0.9f))),
+    PRO_NEG_STD("Pro Neg. Std", FilmParams(
+        sat = 0.82f, contrast = -0.02f, lift = 0.01f,
+        bandSat = f(0.88f, 0.88f, 0.88f, 0.88f, 0.88f, 0.88f))),
+    CLASSIC_NEG("Classic Neg.", FilmParams(
+        sat = 0.88f, contrast = 0.38f, lift = 0.01f,
+        hue = f(-6f, 8f, 10f, 0f, -6f, -4f),
+        bandSat = f(1f, 0.85f, 0.8f, 1f, 0.9f, 0.9f),
+        bandLum = f(0f, -0.02f, -0.03f, 0f, -0.03f, 0f),
+        shadowTint = f(-0.015f, 0.008f, 0.015f),
+        highTint = f(0.02f, 0.005f, -0.012f))),
+    NOSTALGIC_NEG("Nostalgic Neg.", FilmParams(
+        sat = 0.95f, contrast = 0.12f, lift = 0.015f,
+        hue = f(3f, -3f, -4f, 0f, 0f, 0f),
+        bandSat = f(1f, 1f, 0.85f, 0.9f, 0.85f, 0.9f),
+        shadowTint = f(0.004f, 0f, -0.004f),
+        highTint = f(0.035f, 0.015f, -0.035f))),
+    ETERNA("Eterna / Cinema", FilmParams(
+        sat = 0.62f, contrast = -0.15f, lift = 0.035f,
+        hue = f(0f, 0f, 8f, 0f, -4f, 0f),
+        bandSat = f(0.85f, 0.8f, 0.75f, 0.9f, 0.85f, 0.8f),
+        shadowTint = f(-0.012f, 0.004f, 0.01f),
+        highTint = f(0.008f, 0.004f, -0.006f))),
+    ETERNA_BB("Eterna Bleach Bypass", FilmParams(
+        sat = 0.32f, contrast = 0.45f, lift = 0.005f,
+        shadowTint = f(-0.005f, 0f, 0.005f))),
+    ACROS("Acros", FilmParams(contrast = 0.3f, mono = true, monoW = f(0.3f, 0.59f, 0.11f))),
+    ACROS_YE("Acros + Ye", FilmParams(contrast = 0.3f, mono = true, monoW = f(0.4f, 0.5f, 0.1f))),
+    ACROS_R("Acros + R", FilmParams(contrast = 0.35f, mono = true, monoW = f(0.6f, 0.35f, 0.05f))),
+    ACROS_G("Acros + G", FilmParams(contrast = 0.3f, mono = true, monoW = f(0.25f, 0.65f, 0.1f))),
+    MONOCHROME("Monochrome", FilmParams(contrast = 0.15f, mono = true)),
+    SEPIA("Sepia", FilmParams(contrast = 0.1f, lift = 0.02f, mono = true, monoTone = f(1.08f, 0.98f, 0.82f))),
+}
+
+enum class WbMode(val label: String, val kelvin: Int?) {
+    AUTO("Auto", null),
+    DAYLIGHT("Daylight", 5500),
+    CLOUDY("Cloudy", 6500),
+    SHADE("Shade", 7500),
+    FLUORESCENT("Fluorescent", 4200),
+    INCANDESCENT("Incandescent", 2850),
+    KELVIN("Kelvin", null),
+}
+
+data class Recipe(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val film: FilmSim = FilmSim.PROVIA,
+    val dr: Int = 100,              // 100, 200, 400
+    val highlight: Float = 0f,      // -2 .. +4 (0.5 steps)
+    val shadow: Float = 0f,         // -2 .. +4 (0.5 steps)
+    val color: Int = 0,             // -4 .. +4
+    val sharpness: Int = 0,         // -4 .. +4
+    val clarity: Int = 0,           // -5 .. +5
+    val grain: Int = 0,             // 0 off, 1 weak, 2 strong
+    val grainLarge: Boolean = false,
+    val chrome: Int = 0,            // Color Chrome Effect 0/1/2
+    val chromeBlue: Int = 0,        // Color Chrome FX Blue 0/1/2
+    val wb: WbMode = WbMode.AUTO,
+    val kelvin: Int = 5500,
+    val wbR: Int = 0,               // -9 .. +9
+    val wbB: Int = 0,               // -9 .. +9
+    val ev: Float = 0f,             // exposure compensation
+    val credit: String = "",
+    val builtIn: Boolean = false,
+) {
+    fun summary(): String {
+        val lvl = arrayOf("Off", "Weak", "Strong")
+        val wbText = (if (wb == WbMode.KELVIN) "${kelvin}K" else wb.label) + " R${s(wbR)} B${s(wbB)}"
+        val parts = mutableListOf(
+            film.label,
+            "DR$dr",
+            "H${s(highlight)} S${s(shadow)}",
+        )
+        if (!film.p.mono) parts += "Color ${s(color)}"
+        parts += "WB $wbText"
+        parts += "Grain ${lvl[grain]}" + if (grain > 0) (if (grainLarge) " L" else " S") else ""
+        if (chrome > 0) parts += "CCE ${lvl[chrome]}"
+        if (chromeBlue > 0) parts += "CC Blue ${lvl[chromeBlue]}"
+        if (sharpness != 0) parts += "Sharp ${s(sharpness)}"
+        if (clarity != 0) parts += "Clarity ${s(clarity)}"
+        if (ev != 0f) parts += "EV ${evText(ev)}"
+        return parts.joinToString(" · ")
+    }
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("id", id); put("name", name); put("film", film.name); put("dr", dr)
+        put("highlight", highlight.toDouble()); put("shadow", shadow.toDouble())
+        put("color", color); put("sharpness", sharpness); put("clarity", clarity)
+        put("grain", grain); put("grainLarge", grainLarge)
+        put("chrome", chrome); put("chromeBlue", chromeBlue)
+        put("wb", wb.name); put("kelvin", kelvin); put("wbR", wbR); put("wbB", wbB)
+        put("ev", ev.toDouble()); put("credit", credit)
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject) = Recipe(
+            id = o.optString("id", UUID.randomUUID().toString()),
+            name = o.optString("name", "Recipe"),
+            film = runCatching { FilmSim.valueOf(o.getString("film")) }.getOrDefault(FilmSim.PROVIA),
+            dr = o.optInt("dr", 100),
+            highlight = o.optDouble("highlight", 0.0).toFloat(),
+            shadow = o.optDouble("shadow", 0.0).toFloat(),
+            color = o.optInt("color", 0),
+            sharpness = o.optInt("sharpness", 0),
+            clarity = o.optInt("clarity", 0),
+            grain = o.optInt("grain", 0),
+            grainLarge = o.optBoolean("grainLarge", false),
+            chrome = o.optInt("chrome", 0),
+            chromeBlue = o.optInt("chromeBlue", 0),
+            wb = runCatching { WbMode.valueOf(o.getString("wb")) }.getOrDefault(WbMode.AUTO),
+            kelvin = o.optInt("kelvin", 5500),
+            wbR = o.optInt("wbR", 0),
+            wbB = o.optInt("wbB", 0),
+            ev = o.optDouble("ev", 0.0).toFloat(),
+            credit = o.optString("credit", ""),
+            builtIn = false,
+        )
+
+        fun s(v: Int) = if (v > 0) "+$v" else "$v"
+        fun s(v: Float): String {
+            val str = if (abs(v - v.roundToInt()) < 0.01f) "${v.roundToInt()}" else String.format("%.1f", v)
+            return if (v > 0) "+$str" else str
+        }
+        fun evText(v: Float): String {
+            val thirds = (v * 3).roundToInt()
+            if (thirds == 0) return "0"
+            val sign = if (thirds > 0) "+" else "-"
+            val a = abs(thirds)
+            val whole = a / 3
+            val rem = a % 3
+            val txt = when {
+                rem == 0 -> "$whole"
+                whole == 0 -> "$rem/3"
+                else -> "$whole $rem/3"
+            }
+            return sign + txt
+        }
+    }
+}
+
+/** Recipes shipped with the app. Settings come from published Fuji X Weekly recipes (credited). */
+object BuiltIns {
+    private const val FXW = "Fuji X Weekly"
+    val list = listOf(
+        Recipe("b_reggies_portra", "Reggie's Portra", FilmSim.CLASSIC_CHROME,
+            dr = 200, highlight = -1f, shadow = -1f, color = 2, sharpness = -2,
+            grain = 1, chrome = 2, chromeBlue = 1, wb = WbMode.AUTO, wbR = 2, wbB = -4,
+            credit = "Reggie Ballesteros / $FXW", builtIn = true),
+        Recipe("b_kodak_gold_200", "Kodak Gold 200", FilmSim.CLASSIC_CHROME,
+            dr = 400, highlight = -1.5f, shadow = 0.5f, color = 3, sharpness = -2, clarity = -2,
+            grain = 2, chrome = 1, chromeBlue = 0, wb = WbMode.DAYLIGHT, wbR = 4, wbB = -5, ev = 0.67f,
+            credit = FXW, builtIn = true),
+        Recipe("b_kodachrome_64", "Kodachrome 64", FilmSim.CLASSIC_CHROME,
+            dr = 200, highlight = 0f, shadow = 0.5f, color = 2, sharpness = 1, clarity = 3,
+            grain = 1, chrome = 2, chromeBlue = 0, wb = WbMode.DAYLIGHT, wbR = 2, wbB = -5, ev = 0.33f,
+            credit = FXW, builtIn = true),
+        Recipe("b_portra_400_v2", "Kodak Portra 400 v2", FilmSim.CLASSIC_CHROME,
+            dr = 200, highlight = -1f, shadow = -1f, color = 2, sharpness = -2,
+            grain = 2, chrome = 2, chromeBlue = 0, wb = WbMode.DAYLIGHT, wbR = 2, wbB = -6, ev = 0.67f,
+            credit = FXW, builtIn = true),
+        Recipe("b_nostalgia_negative", "Nostalgia Negative", FilmSim.NOSTALGIC_NEG,
+            dr = 400, highlight = -1f, shadow = 1f, color = 4, sharpness = -1, clarity = -3,
+            grain = 2, chrome = 2, chromeBlue = 1, wb = WbMode.DAYLIGHT, wbR = 3, wbB = -3, ev = 0.33f,
+            credit = FXW, builtIn = true),
+        Recipe("b_cinestill_800t", "CineStill 800T", FilmSim.ETERNA,
+            dr = 400, highlight = 0f, shadow = 2f, color = 4, sharpness = -3, clarity = -5,
+            grain = 2, grainLarge = true, chrome = 2, chromeBlue = 1,
+            wb = WbMode.FLUORESCENT, wbR = -6, wbB = -4,
+            credit = FXW, builtIn = true),
+        Recipe("b_velvia_v2", "Velvia v2", FilmSim.VELVIA,
+            dr = 200, highlight = -1f, shadow = -1f, color = 4,
+            grain = 1, chrome = 2, wb = WbMode.AUTO, ev = 0.67f,
+            credit = FXW, builtIn = true),
+        Recipe("b_trix_400", "Kodak Tri-X 400", FilmSim.ACROS,
+            dr = 200, highlight = 0f, shadow = 3f, sharpness = 1, clarity = 4,
+            grain = 2, grainLarge = true, chrome = 2, wb = WbMode.DAYLIGHT, wbR = 9, wbB = -9, ev = 0.67f,
+            credit = "Anders Lindborg / $FXW", builtIn = true),
+        Recipe("b_nostalgic_fuji", "Nostalgic Neg. (Fujifilm tip)", FilmSim.NOSTALGIC_NEG,
+            dr = 100, shadow = -2f, color = -2, wb = WbMode.AUTO, wbR = 2, wbB = -3,
+            credit = "Fujifilm suggested adjustment", builtIn = true),
+        Recipe("b_classic_neg", "Classic Neg. (default)", FilmSim.CLASSIC_NEG, credit = "Factory default", builtIn = true),
+        Recipe("b_reala_ace", "Reala Ace (default)", FilmSim.REALA_ACE, credit = "Factory default", builtIn = true),
+        Recipe("b_provia", "Provia (default)", FilmSim.PROVIA, credit = "Factory default", builtIn = true),
+    )
+}
+
+class RecipeStore(ctx: Context) {
+    private val prefs = ctx.getSharedPreferences("recipes", Context.MODE_PRIVATE)
+
+    fun loadCustom(): List<Recipe> = runCatching {
+        val arr = JSONArray(prefs.getString("custom", "[]"))
+        (0 until arr.length()).map { Recipe.fromJson(arr.getJSONObject(it)) }
+    }.getOrDefault(emptyList())
+
+    fun saveCustom(list: List<Recipe>) {
+        val arr = JSONArray()
+        list.forEach { arr.put(it.toJson()) }
+        prefs.edit().putString("custom", arr.toString()).apply()
+    }
+
+    var selectedId: String?
+        get() = prefs.getString("selected", null)
+        set(v) { prefs.edit().putString("selected", v).apply() }
+}
