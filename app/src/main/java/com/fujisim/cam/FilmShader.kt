@@ -73,7 +73,7 @@ class FilmShader {
                 val canvas = node.beginRecording()
                 canvas.drawBitmap(src, 0f, 0f, null)
                 node.endRecording()
-                renderer.createRenderRequest().setWait(true).syncAndDraw()
+                renderer.createRenderRequest().setWaitForPresent(true).syncAndDraw()
 
                 val image = reader.acquireNextImage()
                 if (image != null) {
