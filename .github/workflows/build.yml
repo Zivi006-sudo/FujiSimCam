@@ -22,7 +22,7 @@ jobs:
           code=$?
           tail -n 80 build.log
           if [ $code -ne 0 ]; then
-            grep -E "^e: |error:|ERROR:|What went wrong|AGSL|Exception:|> " build.log | head -n 40 | while IFS= read -r line; do
+            grep -vE "^> Task" build.log | grep -E "^e: |error:|ERROR:|What went wrong|Exception|Could not|^> " | head -n 9 | while IFS= read -r line; do
               echo "::error::${line}"
             done
           fi
