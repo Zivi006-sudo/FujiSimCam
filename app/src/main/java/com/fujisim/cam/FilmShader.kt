@@ -33,10 +33,14 @@ class FilmShader {
     fun renderEffect(): RenderEffect = RenderEffect.createRuntimeShaderEffect(shader, "content")
 
     companion object {
-        /** Apply a look to a full-size bitmap on the GPU (background thread). */
-        fun process(src: Bitmap, look: Look, scale: Float): Bitmap {
-            val w = src.width
-            val h = src.height
+        /**
+         * Apply a look to a full-size bitmap on the GPU (background thread).
+         * Rotation is done on the GPU too, so large (50MP) photos don't need an extra copy in memory.
+         */
+        fun process(src: Bitmap, look: Look, scale: Float, rotation: Int = 0): Bitmap {
+            val rot = ((rotation % 360) + 360) % 360
+            val w = if (rot == 90 || rot == 270) src.height else src.width
+            val h = if (rot == 90 || rot == 270) src.width else src.height
             val fs = FilmShader()
             fs.set(look, w.toFloat(), h.toFloat(), scale, 0f, 1f)
 
@@ -53,6 +57,11 @@ class FilmShader {
                 node.setPosition(0, 0, w, h)
                 node.setRenderEffect(fs.renderEffect())
                 val canvas = node.beginRecording()
+                when (rot) {
+                    90 -> { canvas.translate(w.toFloat(), 0f); canvas.rotate(90f) }
+                    180 -> { canvas.translate(w.toFloat(), h.toFloat()); canvas.rotate(180f) }
+                    270 -> { canvas.translate(0f, h.toFloat()); canvas.rotate(270f) }
+                }
                 canvas.drawBitmap(src, 0f, 0f, null)
                 node.endRecording()
                 renderer.createRenderRequest().setWaitForPresent(true).syncAndDraw()

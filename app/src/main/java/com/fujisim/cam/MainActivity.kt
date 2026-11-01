@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
@@ -26,6 +27,7 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Size
 import android.view.Choreographer
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.ScaleGestureDetector
@@ -35,6 +37,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -104,6 +107,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var processingOverlay: View
     private lateinit var processingText: TextView
     private lateinit var processingBar: ProgressBar
+    private lateinit var focusOverlay: FocusOverlay
+    private lateinit var resBtn: TextView
+    private lateinit var chipScroll: View
+    private lateinit var stylesBar: View
+    private lateinit var stylePad: StylePad
+    private lateinit var paletteBar: SeekBar
+    private lateinit var styleCategory: TextView
+    private lateinit var styleNameBox: View
+    private lateinit var styleName: TextView
+    private lateinit var styleDots: TextView
 
     // State
     private lateinit var store: RecipeStore
@@ -131,6 +144,10 @@ class MainActivity : AppCompatActivity() {
     private var awbModes: IntArray? = null
     private var lastCamKey = ""
     private var zoomRatio = 1f
+    private var userEv = 0f            // on-screen exposure, added to the recipe's EV
+    private var aeLocked = false
+    private var highRes = false
+    private var maxPhotoMp = 0
     private var lastUri: Uri? = null
     private var lastMime = "image/jpeg"
     private val previewShader = FilmShader()
@@ -220,6 +237,16 @@ class MainActivity : AppCompatActivity() {
         processingOverlay = findViewById(R.id.processingOverlay)
         processingText = findViewById(R.id.processingText)
         processingBar = findViewById(R.id.processingBar)
+        focusOverlay = findViewById(R.id.focusOverlay)
+        resBtn = findViewById(R.id.resBtn)
+        chipScroll = findViewById(R.id.chipScroll)
+        stylesBar = findViewById(R.id.stylesBar)
+        stylePad = findViewById(R.id.stylePad)
+        paletteBar = findViewById(R.id.paletteBar)
+        styleCategory = findViewById(R.id.styleCategory)
+        styleNameBox = findViewById(R.id.styleNameBox)
+        styleName = findViewById(R.id.styleName)
+        styleDots = findViewById(R.id.styleDots)
 
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
@@ -233,6 +260,8 @@ class MainActivity : AppCompatActivity() {
         currentStyle = prefs.selectedStyle
         styleLive = prefs.styleSettings(currentStyle)
         grid.mode = GridOverlay.Mode.values().getOrElse(prefs.gridMode) { GridOverlay.Mode.OFF }
+        highRes = prefs.highRes
+        setupStyleControls()
 
         rebuildChips()
         updateModeButtons()
@@ -246,6 +275,7 @@ class MainActivity : AppCompatActivity() {
             lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
                 CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
             zoomRatio = 1f
+            resetFocus()
             startCamera()
         }
         thumb.setOnClickListener { openLast() }
@@ -264,6 +294,16 @@ class MainActivity : AppCompatActivity() {
             rebuildChips()
             updateModeButtons()
             refreshLook()
+        }
+        resBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            if (!highRes && maxPhotoMp in 1..19) {
+                Toast.makeText(this, "Xiaomi only gives apps up to ${maxPhotoMp}MP on this camera", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+            highRes = !highRes
+            prefs.highRes = highRes
+            startCamera()
         }
         logBtn.setOnClickListener {
             if (recording != null) return@setOnClickListener
@@ -376,14 +416,21 @@ class MainActivity : AppCompatActivity() {
                 imageCapture = null
                 useCase = vc
             } else {
+                val resSelector = if (highRes) {
+                    ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                        .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+                        .setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
+                        .build()
+                } else {
+                    ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                        .setResolutionStrategy(
+                            ResolutionStrategy(Size(4000, 3000), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
+                        ).build()
+                }
                 val capture = ImageCapture.Builder()
-                    .setResolutionSelector(
-                        ResolutionSelector.Builder()
-                            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-                            .setResolutionStrategy(
-                                ResolutionStrategy(Size(4000, 3000), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
-                            ).build()
-                    )
+                    .setResolutionSelector(resSelector)
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .setJpegQuality(95)
                     .build()
@@ -417,6 +464,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             awbModes = readAwbModes()
+            maxPhotoMp = readMaxMegapixels()
             lastCamKey = ""
             setupZoom()
             updateModeButtons()
@@ -433,10 +481,30 @@ class MainActivity : AppCompatActivity() {
         }.getOrNull()
     }
 
+    /** Largest JPEG size the camera offers to apps (including high-resolution sizes), in megapixels. */
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun readMaxMegapixels(): Int {
+        val cam = camera ?: return 0
+        return runCatching {
+            val map = Camera2CameraInfo.from(cam.cameraInfo)
+                .getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return 0
+            val sizes = (map.getOutputSizes(ImageFormat.JPEG)?.toList() ?: emptyList()) +
+                (map.getHighResolutionOutputSizes(ImageFormat.JPEG)?.toList() ?: emptyList())
+            val best = sizes.maxOfOrNull { it.width.toLong() * it.height } ?: 0L
+            (best / 1_000_000L).toInt()
+        }.getOrDefault(0)
+    }
+
+    private var lastRecipeEv = 0f
+    private var lastAwbMode = CaptureRequest.CONTROL_AWB_MODE_AUTO
+
     @OptIn(ExperimentalCamera2Interop::class)
     private fun applyCameraSettings(awbMode: Int, ev: Float) {
+        lastRecipeEv = ev
+        lastAwbMode = awbMode
         val cam = camera ?: return
-        val key = "$awbMode|$ev"
+        val total = ev + userEv
+        val key = "$awbMode|$total|$aeLocked"
         if (key == lastCamKey) return
         lastCamKey = key
         val exposure = cam.cameraInfo.exposureState
@@ -444,14 +512,27 @@ class MainActivity : AppCompatActivity() {
             val step = exposure.exposureCompensationStep.toFloat()
             if (step > 0f) {
                 val range = exposure.exposureCompensationRange
-                cam.cameraControl.setExposureCompensationIndex((ev / step).roundToInt().coerceIn(range.lower, range.upper))
+                cam.cameraControl.setExposureCompensationIndex((total / step).roundToInt().coerceIn(range.lower, range.upper))
             }
         }
         runCatching {
             Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(
-                CaptureRequestOptions.Builder().setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode).build()
+                CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode)
+                    .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
+                    .build()
             )
         }
+    }
+
+    private fun reapplyCameraSettings() = applyCameraSettings(lastAwbMode, lastRecipeEv)
+
+    private fun resetFocus() {
+        userEv = 0f
+        aeLocked = false
+        focusOverlay.clear()
+        camera?.cameraControl?.cancelFocusAndMetering()
+        reapplyCameraSettings()
     }
 
     // ------------------------------------------------------------------ Zoom & gestures
@@ -514,35 +595,153 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun focusAt(x: Float, y: Float, lock: Boolean) {
+        val cam = camera ?: return
+        val point = previewView.meteringPointFactory.createPoint(x, y)
+        val action = FocusMeteringAction.Builder(point).disableAutoCancel().build()
+        cam.cameraControl.startFocusAndMetering(action)
+        aeLocked = false
+        reapplyCameraSettings()
+        if (lock) {
+            // Let metering settle on the new spot, then freeze exposure too.
+            mainHandler.postDelayed({
+                aeLocked = true
+                reapplyCameraSettings()
+            }, 700)
+        }
+        focusOverlay.setLocked(lock)
+        focusOverlay.showAt(x, y)
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun setupPreviewGestures() {
-        var scaled = false
+        var scaling = false
+        var dragEv = false
         val scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 val cam = camera ?: return false
                 val zs = cam.cameraInfo.zoomState.value ?: return false
                 zoomRatio = (zs.zoomRatio * detector.scaleFactor).coerceIn(zs.minZoomRatio, zs.maxZoomRatio)
                 cam.cameraControl.setZoomRatio(zoomRatio)
-                scaled = true
+                scaling = true
                 return true
             }
         })
-        previewView.setOnTouchListener { v, event ->
-            scaleDetector.onTouchEvent(event)
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> scaled = false
-                MotionEvent.ACTION_UP -> {
-                    if (!scaled) {
-                        val point = previewView.meteringPointFactory.createPoint(event.x, event.y)
-                        camera?.cameraControl?.startFocusAndMetering(
-                            FocusMeteringAction.Builder(point).setAutoCancelDuration(4, TimeUnit.SECONDS).build()
-                        )
-                        v.performClick()
-                    }
-                }
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (!scaling) focusAt(e.x, e.y, lock = false)
+                return true
             }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                resetFocus()
+                Toast.makeText(this@MainActivity, "Auto focus & exposure", Toast.LENGTH_SHORT).show()
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                if (!scaling) focusAt(e.x, e.y, lock = true)
+            }
+
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+                if (scaling || e1 == null) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                if (dragEv || (abs(dy) > abs(dx) * 1.3f && abs(dy) > dp(12))) {
+                    dragEv = true
+                    // drag up = brighter; full screen height ≈ 4 EV
+                    userEv = (userEv + distanceY / previewView.height * 4f).coerceIn(-2f, 2f)
+                    val snapped = (userEv * 10f).roundToInt() / 10f
+                    focusOverlay.setEv(snapped)
+                    reapplyCameraSettings()
+                    return true
+                }
+                return false
+            }
+
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                if (scaling || dragEv || e1 == null || recording != null || editing) return false
+                val dx = e2.x - e1.x
+                if (abs(dx) > dp(60) && abs(velocityX) > abs(velocityY) * 1.5f) {
+                    stepLook(if (dx < 0) 1 else -1)
+                    return true
+                }
+                return false
+            }
+        })
+        previewView.setOnTouchListener { v, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) { scaling = false; dragEv = false }
+            scaleDetector.onTouchEvent(event)
+            if (event.pointerCount > 1) scaling = true
+            gestures.onTouchEvent(event)
+            if (event.actionMasked == MotionEvent.ACTION_UP) v.performClick()
             true
         }
+    }
+
+    /** Swipe on the viewfinder: next/previous style (or recipe in Fuji mode). */
+    private fun stepLook(dir: Int) {
+        if (stylesMode) {
+            val all = PhotoStyle.values()
+            val next = all[(currentStyle.ordinal + dir + all.size) % all.size]
+            selectStyle(next)
+        } else {
+            val i = recipes.indexOfFirst { it.id == current.id }
+            val r = recipes[(i + dir + recipes.size) % recipes.size]
+            current = r
+            live = r
+            store.selectedId = r.id
+            rebuildChips()
+            refreshLook()
+        }
+    }
+
+    private fun selectStyle(st: PhotoStyle) {
+        currentStyle = st
+        prefs.selectedStyle = st
+        styleLive = prefs.styleSettings(st)
+        rebuildChips()
+        syncStyleControls()
+        refreshLook()
+    }
+
+    private fun setupStyleControls() {
+        stylePad.onChange = { c, t ->
+            styleLive = styleLive.copy(color = c, tone = t)
+            prefs.saveStyleSettings(currentStyle, styleLive)
+            refreshLook()
+        }
+        paletteBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                styleLive = styleLive.copy(palette = progress / 100f)
+                prefs.saveStyleSettings(currentStyle, styleLive)
+                refreshLook()
+            }
+            override fun onStartTrackingTouch(seek: SeekBar?) {}
+            override fun onStopTrackingTouch(seek: SeekBar?) {}
+        })
+        syncStyleControls()
+    }
+
+    /** Push the current style's colours/values into the on-screen pad, slider and labels. */
+    private fun syncStyleControls() {
+        val accent = Color.parseColor(currentStyle.accentHex)
+        stylePad.accent = accent
+        stylePad.color = styleLive.color
+        stylePad.tone = styleLive.tone
+        stylePad.invalidate()
+        paletteBar.progress = (styleLive.palette * 100).roundToInt()
+        paletteBar.progressDrawable = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(Color.parseColor("#4A4A4A"), accent)
+        ).apply { cornerRadius = dp(8).toFloat() }
+        paletteBar.thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+        styleCategory.text = currentStyle.category.name
+        styleName.text = currentStyle.label.uppercase(Locale.US)
+        styleDots.text = PhotoStyle.values().joinToString(" ") { if (it == currentStyle) "●" else "•" }
     }
 
     // ------------------------------------------------------------------ Looks
@@ -553,6 +752,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Rebuild the current look from the recipe/style on screen and push it everywhere. */
     private fun refreshLook() {
+        recipeInfo.visibility = if (stylesMode) View.GONE else View.VISIBLE
         if (stylesMode) {
             lookNow = Look.fromStyle(currentStyle, styleLive)
             applyCameraSettings(CaptureRequest.CONTROL_AWB_MODE_AUTO, 0f)
@@ -604,13 +804,7 @@ class MainActivity : AppCompatActivity() {
         val lp = { LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(8) } }
         if (stylesMode) {
             for (st in PhotoStyle.values()) {
-                recipeBar.addView(chip(st.label, st == currentStyle, {
-                    currentStyle = st
-                    prefs.selectedStyle = st
-                    styleLive = prefs.styleSettings(st)
-                    rebuildChips()
-                    refreshLook()
-                }, {}), lp())
+                recipeBar.addView(chip(st.label, st == currentStyle, { selectStyle(st) }, {}), lp())
             }
         } else {
             for (r in recipes) {
@@ -630,7 +824,15 @@ class MainActivity : AppCompatActivity() {
         gridBtn.text = grid.mode.label
         photoModeBtn.setTextColor(if (!videoMode) Color.parseColor("#FFC94A") else Color.WHITE)
         videoModeBtn.setTextColor(if (videoMode) Color.parseColor("#FFC94A") else Color.WHITE)
-        logBtn.visibility = if (videoMode) View.VISIBLE else View.INVISIBLE
+        logBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
+        resBtn.visibility = if (videoMode) View.GONE else View.VISIBLE
+        resBtn.text = if (highRes) "${if (maxPhotoMp > 0) maxPhotoMp else 50}MP" else "12MP"
+        resBtn.setTextColor(if (highRes) Color.parseColor("#FFC94A") else Color.WHITE)
+        chipScroll.visibility = if (stylesMode) View.GONE else View.VISIBLE
+        stylesBar.visibility = if (stylesMode) View.VISIBLE else View.GONE
+        styleCategory.visibility = if (stylesMode) View.VISIBLE else View.GONE
+        styleNameBox.visibility = if (stylesMode) View.VISIBLE else View.GONE
+        if (stylesMode) syncStyleControls()
         logBtn.text = when {
             !logMode -> "LOG off"
             hlgSupported -> "LOG 10-bit"
@@ -673,7 +875,10 @@ class MainActivity : AppCompatActivity() {
         editing = false
         editorContainer.visibility = View.GONE
         editorContainer.removeAllViews()
-        if (!stylesMode) live = current
+        if (!stylesMode) live = current else {
+            styleLive = prefs.styleSettings(currentStyle)
+            syncStyleControls()
+        }
         refreshLook()
     }
 
@@ -739,9 +944,10 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val rotation = image.imageInfo.rotationDegrees
                     val raw = try { image.toBitmap() } finally { image.close() }
-                    val upright = prepare(raw, rotation)
-                    val scale = (min(upright.width, upright.height).toFloat() / previewWidth).coerceAtLeast(1f)
-                    val out = FilmShader.process(upright, look, scale)
+                    val src = limitSize(raw, 8192)
+                    val scale = (min(src.width, src.height).toFloat() / previewWidth).coerceAtLeast(1f)
+                    val out = FilmShader.process(src, look, scale, rotation)
+                    src.recycle()
                     val uri = saveJpeg(out, "$name: $desc")
                     val small = Bitmap.createScaledBitmap(out, 160, (160f * out.height / out.width).roundToInt(), true)
                     runOnUiThread {
@@ -767,11 +973,14 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun prepare(src: Bitmap, rotation: Int): Bitmap {
-        val sc = min(1f, 4096f / max(src.width, src.height))
-        if (rotation == 0 && sc >= 1f) return src
-        val m = Matrix().apply { postRotate(rotation.toFloat()); postScale(sc, sc) }
-        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    /** Keep within GPU texture limits; 50MP (8160×6144) fits without scaling. */
+    private fun limitSize(src: Bitmap, maxSide: Int): Bitmap {
+        val sc = min(1f, maxSide.toFloat() / max(src.width, src.height))
+        if (sc >= 1f) return src
+        val m = Matrix().apply { postScale(sc, sc) }
+        val out = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+        src.recycle()
+        return out
     }
 
     private fun timestamp() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())

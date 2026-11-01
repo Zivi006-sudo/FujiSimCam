@@ -12,7 +12,7 @@ import android.widget.SeekBar
 import android.widget.TextView
 import kotlin.math.roundToInt
 
-/** Editor for iPhone-style Photographic Styles: pad + Palette, Grain and Detail. Saves as you go. */
+/** "More" panel for Styles: Palette, Texture (Grain, Detail) and Reset. Tone/Colour live on the main screen pad. */
 class StylePanel(
     private val ctx: Context,
     private val style: PhotoStyle,
@@ -35,7 +35,7 @@ class StylePanel(
 
         val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         header.addView(TextView(ctx).apply {
-            text = style.label
+            text = "${style.label} · Texture"
             setTextColor(Color.WHITE)
             textSize = 18f
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -46,15 +46,6 @@ class StylePanel(
         })
         header.addView(pill("Done", "#FFC94A", Color.BLACK) { onClose() })
         col.addView(header)
-
-        val pad = StylePad(ctx).apply {
-            color = s.color
-            tone = s.tone
-            onChange = { c, t -> update(s.copy(color = c, tone = t)) }
-        }
-        col.addView(pad, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(12); bottomMargin = dp(8)
-        })
 
         col.addView(slider("Palette (style strength)", 0f, 1f, s.palette, true) { update(s.copy(palette = it)) })
         col.addView(slider("Texture: Grain", 0f, 1f, s.grain, true) { update(s.copy(grain = it)) })

@@ -25,6 +25,60 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
 
+            <com.fujisim.cam.FocusOverlay
+                android:id="@+id/focusOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <TextView
+                android:id="@+id/styleCategory"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="62dp"
+                android:background="@drawable/pill"
+                android:letterSpacing="0.08"
+                android:paddingStart="12dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="4dp"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/styleNameBox"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="58dp"
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/styleName"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="#99000000"
+                    android:letterSpacing="0.1"
+                    android:paddingStart="10dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="10dp"
+                    android:paddingBottom="3dp"
+                    android:textColor="#FFFFFF"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/styleDots"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textColor="#FFFFFF"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
             <View
                 android:id="@+id/flash"
                 android:layout_width="match_parent"
@@ -63,10 +117,15 @@
                     android:layout_weight="1" />
 
                 <TextView
+                    android:id="@+id/resBtn"
+                    style="@style/TopChip"
+                    android:text="12MP" />
+
+                <TextView
                     android:id="@+id/logBtn"
                     style="@style/TopChip"
                     android:text="LOG off"
-                    android:visibility="invisible" />
+                    android:visibility="gone" />
             </LinearLayout>
 
             <TextView
@@ -132,6 +191,7 @@
         </FrameLayout>
 
         <HorizontalScrollView
+            android:id="@+id/chipScroll"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="8dp"
@@ -146,6 +206,30 @@
                 android:paddingStart="8dp"
                 android:paddingEnd="8dp" />
         </HorizontalScrollView>
+
+        <LinearLayout
+            android:id="@+id/stylesBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingTop="10dp"
+            android:visibility="gone">
+
+            <com.fujisim.cam.StylePad
+                android:id="@+id/stylePad"
+                android:layout_width="112dp"
+                android:layout_height="112dp" />
+
+            <SeekBar
+                android:id="@+id/paletteBar"
+                android:layout_width="140dp"
+                android:layout_height="28dp"
+                android:layout_marginTop="8dp"
+                android:max="100"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"

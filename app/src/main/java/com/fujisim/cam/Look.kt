@@ -87,20 +87,33 @@ class Look(
 
         fun fromStyle(style: PhotoStyle, s: StyleSettings): Look {
             val b = style.b
-            val k = s.palette.coerceIn(0f, 1f)          // style intensity
-            fun lerp(a: Float, z: Float) = a + (z - a) * k
             val tone = s.tone.coerceIn(-1f, 1f)
             val color = s.color.coerceIn(-1f, 1f)
+            // Palette = how much of the style's colour goes into the scene.
+            // Colour axis pushes the scene from grey (left) towards the style's own colour (right).
+            val k = (s.palette.coerceIn(0f, 1f) * (1f + 0.8f * color)).coerceIn(0f, 2f)
+            fun lerp(a: Float, z: Float) = a + (z - a) * k
+            // A gentle extra cast in the style's accent colour, so every style recolours the scene.
+            val acc = android.graphics.Color.parseColor(style.accentHex)
+            val ar = android.graphics.Color.red(acc) / 255f
+            val ag = android.graphics.Color.green(acc) / 255f
+            val ab = android.graphics.Color.blue(acc) / 255f
+            val am = (ar + ag + ab) / 3f
+            val cast = if (b.mono || style == PhotoStyle.STANDARD) 0f else 0.035f * k
             return Look(
                 wb = FloatArray(3) { lerp(1f, b.wb[it]) },
-                sat = lerp(1f, b.sat) * (1f + 0.5f * color),
+                sat = lerp(1f, b.sat) * (1f + 0.45f * color),
                 contrast = lerp(0f, b.contrast) - 0.12f * tone,
                 lift = lerp(0f, b.lift) + 0.03f * tone.coerceAtLeast(0f),
                 highlight = lerp(0f, b.highlight) + 0.8f * tone,
                 shadow = lerp(0f, b.shadow) - 2.5f * tone,
                 shadowTint = FloatArray(3) { b.shadowTint[it] * k },
-                highTint = FloatArray(3) { b.highTint[it] * k },
-                mono = if (b.mono) k else 0f,
+                highTint = floatArrayOf(
+                    b.highTint[0] * k + (ar - am) * cast,
+                    b.highTint[1] * k + (ag - am) * cast,
+                    b.highTint[2] * k + (ab - am) * cast,
+                ),
+                mono = if (b.mono) s.palette.coerceIn(0f, 1f) else 0f,
                 warmth = b.warmth * k,
                 grain = s.grain.coerceIn(0f, 1f) * 0.1f,
                 grainSize = 1.4f,
