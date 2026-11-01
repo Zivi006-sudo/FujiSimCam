@@ -1,0 +1,234 @@
+package com.fujisim.cam
+
+/**
+ * One colour engine, two backends:
+ *  - AGSL (RuntimeShader) for the live viewfinder and still photos
+ *  - GLSL ES (Media3 effect) for video
+ * The grading code (CORE) is shared so preview, photos and video match.
+ */
+object Shaders {
+
+    private const val UNIFORMS = """
+uniform vec2 uSize;
+uniform float uScale;
+uniform float uTime;
+uniform float uMix;
+uniform vec3 uWb;
+uniform float uSat;
+uniform float uContrast;
+uniform float uLift;
+uniform float uHighlight;
+uniform float uShadow;
+uniform vec3 uHueA;
+uniform vec3 uHueB;
+uniform vec3 uSatA;
+uniform vec3 uSatB;
+uniform vec3 uLumA;
+uniform vec3 uLumB;
+uniform vec3 uShadowTint;
+uniform vec3 uHighTint;
+uniform float uMono;
+uniform vec3 uMonoW;
+uniform vec3 uMonoTone;
+uniform float uChrome;
+uniform float uChromeBlue;
+uniform float uGrain;
+uniform float uGrainSize;
+uniform float uSharp;
+uniform float uClarity;
+uniform float uWarmth;
+uniform float uGlow;
+"""
+
+    private const val CORE = """
+const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+const float PI = 3.14159265;
+
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+float bandW(float h, float c) {
+    float d = abs(h - c);
+    d = min(d, 1.0 - d);
+    return max(0.0, 1.0 - d * 6.0);
+}
+
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.x, p.y, p.x) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float a = hash12(i);
+    float b = hash12(i + vec2(1.0, 0.0));
+    float c = hash12(i + vec2(0.0, 1.0));
+    float d = hash12(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+vec3 toneCurve(vec3 x) {
+    x = clamp(x, 0.0, 1.0);
+    x = mix(x, x * x * (3.0 - 2.0 * x), uContrast);
+    vec3 hw = sin(PI * clamp((x - 0.35) / 0.65, 0.0, 1.0));
+    vec3 sw = sin(PI * clamp(x / 0.65, 0.0, 1.0));
+    x = x + uHighlight * 0.035 * hw - uShadow * 0.035 * sw;
+    x = clamp(x, 0.0, 1.0);
+    return uLift + x * (1.0 - uLift);
+}
+
+vec3 brightPass(vec3 v) {
+    return max(v - vec3(0.62), vec3(0.0)) / 0.38;
+}
+
+vec3 grade(vec3 orig, vec2 p) {
+    vec3 c = orig;
+    float s = uScale;
+
+    // Sharpness / detail
+    if (uSharp != 0.0) {
+        float o = 1.5 * s;
+        vec3 b1 = (src(p + vec2(o, 0.0)) + src(p - vec2(o, 0.0)) +
+                   src(p + vec2(0.0, o)) + src(p - vec2(0.0, o))) * 0.25;
+        c += uSharp * (c - b1);
+    }
+
+    // Clarity (mid-tone local contrast)
+    if (uClarity != 0.0) {
+        float r = 12.0 * s;
+        float r2 = r * 0.7071;
+        vec3 b2 = (src(p + vec2(r, 0.0)) + src(p - vec2(r, 0.0)) +
+                   src(p + vec2(0.0, r)) + src(p - vec2(0.0, r)) +
+                   src(p + vec2(r2, r2)) + src(p - vec2(r2, r2)) +
+                   src(p + vec2(r2, -r2)) + src(p - vec2(r2, -r2))) * 0.125;
+        float L0 = dot(c, LUMA);
+        float detail = L0 - dot(b2, LUMA);
+        c += uClarity * 0.6 * detail * (4.0 * L0 * (1.0 - L0));
+    }
+
+    // Glow / halation around bright light
+    vec3 bloom = vec3(0.0);
+    if (uGlow > 0.0) {
+        float g1 = 6.0 * s;
+        float g2 = 18.0 * s;
+        float g3 = g2 * 0.7071;
+        bloom = (brightPass(src(p + vec2(g1, 0.0))) + brightPass(src(p - vec2(g1, 0.0))) +
+                 brightPass(src(p + vec2(0.0, g1))) + brightPass(src(p - vec2(0.0, g1))) +
+                 brightPass(src(p + vec2(g2, 0.0))) + brightPass(src(p - vec2(g2, 0.0))) +
+                 brightPass(src(p + vec2(0.0, g2))) + brightPass(src(p - vec2(0.0, g2))) +
+                 brightPass(src(p + vec2(g3, g3))) + brightPass(src(p - vec2(g3, g3))) +
+                 brightPass(src(p + vec2(g3, -g3))) + brightPass(src(p - vec2(g3, -g3)))) / 12.0;
+    }
+
+    c = max(c, vec3(0.0));
+
+    // White balance (approx. linear light)
+    c = pow(pow(c, vec3(2.2)) * uWb, vec3(1.0 / 2.2));
+
+    // Film simulation colour response per hue band
+    vec3 hsv = rgb2hsv(clamp(c, 0.0, 1.0));
+    float h = hsv.x;
+    vec3 wA = vec3(bandW(h, 0.0), bandW(h, 1.0 / 6.0), bandW(h, 2.0 / 6.0));
+    vec3 wB = vec3(bandW(h, 3.0 / 6.0), bandW(h, 4.0 / 6.0), bandW(h, 5.0 / 6.0));
+    float hueShift = dot(uHueA, wA) + dot(uHueB, wB);
+    float bandSat = dot(uSatA, wA) + dot(uSatB, wB);
+    float bandLum = dot(uLumA, wA) + dot(uLumB, wB);
+    float chroma = hsv.y;
+    hsv.x = fract(hsv.x + hueShift + 1.0);
+    c = hsv2rgb(hsv);
+    float L = dot(c, LUMA);
+    c = vec3(L) + (c - vec3(L)) * (uSat * bandSat);
+    c += vec3(bandLum * chroma);
+
+    // Color Chrome Effect / FX Blue
+    float cc = chroma * chroma * smoothstep(0.15, 0.6, L);
+    c *= 1.0 - uChrome * 0.2 * cc;
+    c *= 1.0 - uChromeBlue * 0.24 * chroma * (wB.y + 0.5 * wB.x);
+
+    // Monochrome
+    float m = dot(max(c, vec3(0.0)), uMonoW);
+    c = mix(c, m * uMonoTone, uMono);
+
+    // Tone curve
+    c = toneCurve(c);
+
+    // Split toning + golden highlight warmth
+    float Lt = dot(c, LUMA);
+    c += uShadowTint * (1.0 - smoothstep(0.0, 0.5, Lt)) + uHighTint * smoothstep(0.45, 1.0, Lt);
+    c += uWarmth * smoothstep(0.35, 1.0, Lt) * vec3(0.075, 0.03, -0.065);
+
+    // Glow, tinted warm like film halation
+    c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55);
+
+    // Film grain (moves over time in video / live view)
+    if (uGrain > 0.0) {
+        float cell = uGrainSize * s;
+        vec2 off = vec2(fract(uTime * 0.371) * 517.0, fract(uTime * 0.613) * 331.0);
+        float g = vnoise(p / cell + off) + vnoise(p / cell * 1.7 + off.yx + vec2(13.1, 7.3)) - 1.0;
+        c += vec3(g * uGrain * (0.35 + 2.6 * Lt * (1.0 - Lt)));
+    }
+
+    c = clamp(c, 0.0, 1.0);
+    return mix(orig, c, uMix);
+}
+"""
+
+    const val AGSL = """
+uniform shader content;
+""" + UNIFORMS + """
+vec3 src(vec2 p) {
+    vec2 q = clamp(p, vec2(0.5), uSize - vec2(0.5));
+    vec4 c = vec4(content.eval(q));
+    return c.a > 0.0 ? c.rgb / c.a : vec3(0.0);
+}
+""" + CORE + """
+half4 main(vec2 p) {
+    vec4 raw = vec4(content.eval(p));
+    float a = raw.a;
+    vec3 o = a > 0.0 ? raw.rgb / a : vec3(0.0);
+    vec3 c = grade(o, p);
+    return half4(half3(c * a), half(a));
+}
+"""
+
+    const val VERTEX_GL = """
+attribute vec4 aFramePosition;
+varying vec2 vTexSamplingCoord;
+void main() {
+    gl_Position = aFramePosition;
+    vTexSamplingCoord = vec2(aFramePosition.x * 0.5 + 0.5, aFramePosition.y * 0.5 + 0.5);
+}
+"""
+
+    const val FRAGMENT_GL = """
+precision highp float;
+uniform sampler2D uTexSampler;
+varying vec2 vTexSamplingCoord;
+""" + UNIFORMS + """
+vec3 src(vec2 p) {
+    vec2 q = clamp(p, vec2(0.5), uSize - vec2(0.5));
+    return texture2D(uTexSampler, q / uSize).rgb;
+}
+""" + CORE + """
+void main() {
+    vec2 p = vTexSamplingCoord * uSize;
+    vec3 o = texture2D(uTexSampler, vTexSamplingCoord).rgb;
+    gl_FragColor = vec4(grade(o, p), 1.0);
+}
+"""
+}

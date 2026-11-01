@@ -16,6 +16,14 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Compile-check viewfinder shader (Skia)
+        run: |
+          python3 tools/extract_shaders.py /tmp/sh.json
+          mkdir -p /tmp/ck && cd /tmp/ck && npm init -y >/dev/null && npm i canvaskit-wasm >/dev/null 2>&1
+          NODE_PATH=/tmp/ck/node_modules node $GITHUB_WORKSPACE/tools/check_agsl.js /tmp/sh.json
       - uses: gradle/actions/setup-gradle@v4
       - name: Build debug APK
         run: |
@@ -25,7 +33,7 @@ jobs:
           code=$?
           tail -n 80 build.log
           if [ $code -ne 0 ]; then
-            grep -vE "^> Task" build.log | grep -E "^e: |error:|ERROR:|What went wrong|Exception|Could not|^> " | head -n 9 | while IFS= read -r line; do
+            ( grep -E "^e: " build.log; grep -vE "^> Task|^e: " build.log | grep -E "error:|ERROR:|What went wrong|Could not|^> " ) | head -n 9 | while IFS= read -r line; do
               echo "::error::${line}"
             done
           fi

@@ -120,6 +120,12 @@ class EditorPanel(
         col.addView(slider("Clarity", -5f, 5f, 1f, recipe.clarity.toFloat(), { Recipe.s(it.roundToInt()) }) {
             update(recipe.copy(clarity = it.roundToInt()))
         })
+        col.addView(slider("Golden highlight warmth", 0f, 10f, 1f, recipe.warmth.toFloat(), { "${it.roundToInt()}" }) {
+            update(recipe.copy(warmth = it.roundToInt()))
+        })
+        col.addView(slider("Glow around light", 0f, 10f, 1f, recipe.glow.toFloat(), { "${it.roundToInt()}" }) {
+            update(recipe.copy(glow = it.roundToInt()))
+        })
         col.addView(slider("Exposure compensation", -2f, 2f, 1f / 3f, recipe.ev, { Recipe.evText(it) }) {
             update(recipe.copy(ev = it))
         })

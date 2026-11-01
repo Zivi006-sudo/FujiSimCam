@@ -20,6 +20,11 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
 
+            <com.fujisim.cam.GridOverlay
+                android:id="@+id/grid"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
             <View
                 android:id="@+id/flash"
                 android:layout_width="match_parent"
@@ -27,13 +32,50 @@
                 android:alpha="0"
                 android:background="#FFFFFF" />
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingTop="10dp"
+                android:paddingEnd="12dp">
+
+                <TextView
+                    android:id="@+id/gridBtn"
+                    style="@style/TopChip"
+                    android:text="Grid" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/lookModeBtn"
+                    style="@style/TopChip"
+                    android:text="FUJI" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/logBtn"
+                    style="@style/TopChip"
+                    android:text="LOG off"
+                    android:visibility="invisible" />
+            </LinearLayout>
+
             <TextView
                 android:id="@+id/recipeInfo"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
                 android:layout_marginStart="16dp"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="58dp"
                 android:layout_marginEnd="16dp"
                 android:background="@drawable/pill"
                 android:gravity="center"
@@ -45,20 +87,48 @@
                 android:textSize="12sp" />
 
             <TextView
+                android:id="@+id/recTimer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/rec_pill"
+                android:paddingStart="12dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="4dp"
+                android:text="● 00:00"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
                 android:id="@+id/originalBadge"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="bottom|center_horizontal"
-                android:layout_marginBottom="16dp"
+                android:layout_marginBottom="64dp"
                 android:background="@drawable/pill"
                 android:paddingStart="14dp"
                 android:paddingTop="6dp"
                 android:paddingEnd="14dp"
                 android:paddingBottom="6dp"
-                android:text="ORIGINAL (no recipe)"
+                android:text="ORIGINAL (no look)"
                 android:textColor="#FFC94A"
                 android:textSize="12sp"
                 android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/zoomBar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="12dp"
+                android:background="@drawable/pill"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:padding="4dp" />
         </FrameLayout>
 
         <HorizontalScrollView
@@ -79,7 +149,41 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="112dp"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingTop="4dp">
+
+            <TextView
+                android:id="@+id/photoModeBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="16dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="4dp"
+                android:text="PHOTO"
+                android:textColor="#FFC94A"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/videoModeBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="16dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="4dp"
+                android:text="VIDEO"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="104dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="16dp"
@@ -90,7 +194,7 @@
                 android:layout_width="52dp"
                 android:layout_height="52dp"
                 android:background="@drawable/thumb_bg"
-                android:contentDescription="Last photo"
+                android:contentDescription="Last capture"
                 android:padding="2dp"
                 android:scaleType="centerCrop" />
 
@@ -101,14 +205,8 @@
 
             <TextView
                 android:id="@+id/compareBtn"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="@drawable/round_btn"
-                android:gravity="center"
-                android:text="A/B"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+                style="@style/RoundBtn"
+                android:text="A/B" />
 
             <Space
                 android:layout_width="0dp"
@@ -121,7 +219,7 @@
                 android:layout_height="78dp"
                 android:background="@drawable/shutter"
                 android:clickable="true"
-                android:contentDescription="Take photo"
+                android:contentDescription="Shutter"
                 android:focusable="true" />
 
             <Space
@@ -131,14 +229,8 @@
 
             <TextView
                 android:id="@+id/editBtn"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="@drawable/round_btn"
-                android:gravity="center"
-                android:text="Edit"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+                style="@style/RoundBtn"
+                android:text="Edit" />
 
             <Space
                 android:layout_width="0dp"
@@ -147,12 +239,8 @@
 
             <TextView
                 android:id="@+id/flipBtn"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="@drawable/round_btn"
-                android:gravity="center"
+                style="@style/RoundBtn"
                 android:text="⟲"
-                android:textColor="#FFFFFF"
                 android:textSize="22sp" />
         </LinearLayout>
     </LinearLayout>
@@ -160,10 +248,38 @@
     <FrameLayout
         android:id="@+id/editorContainer"
         android:layout_width="match_parent"
-        android:layout_height="440dp"
+        android:layout_height="460dp"
         android:layout_gravity="bottom"
         android:background="#F0101010"
         android:clickable="true"
         android:focusable="true"
         android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/processingOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#CC000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/processingText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Applying look to video… 0%"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <ProgressBar
+            android:id="@+id/processingBar"
+            style="@android:style/Widget.Material.ProgressBar.Horizontal"
+            android:layout_width="240dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:max="100" />
+    </LinearLayout>
 </FrameLayout>

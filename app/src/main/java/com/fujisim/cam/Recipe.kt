@@ -28,63 +28,65 @@ class FilmParams(
 )
 
 enum class FilmSim(val label: String, val p: FilmParams) {
-    PROVIA("Provia / Standard", FilmParams(sat = 1.05f, contrast = 0.15f)),
+    PROVIA("Provia / Standard", FilmParams(
+        sat = 1.15f, contrast = 0.25f,
+        bandSat = f(1.05f, 1.0f, 1.05f, 1.05f, 1.08f, 1.0f))),
     VELVIA("Velvia / Vivid", FilmParams(
-        sat = 1.25f, contrast = 0.35f,
-        hue = f(-4f, 0f, 4f, 0f, -3f, 0f),
-        bandSat = f(1.1f, 1.05f, 1.12f, 1.1f, 1.12f, 1.1f),
-        bandLum = f(-0.02f, 0f, -0.04f, -0.02f, -0.06f, 0f))),
+        sat = 1.45f, contrast = 0.45f,
+        hue = f(-5f, 0f, 5f, 0f, -4f, -3f),
+        bandSat = f(1.15f, 1.08f, 1.18f, 1.12f, 1.2f, 1.15f),
+        bandLum = f(-0.03f, 0f, -0.05f, -0.03f, -0.08f, -0.02f))),
     ASTIA("Astia / Soft", FilmParams(
-        sat = 1.1f, contrast = 0.05f,
+        sat = 1.2f, contrast = 0.12f,
         hue = f(2f, 0f, 0f, 0f, 0f, 0f),
-        bandSat = f(0.95f, 0.95f, 1.05f, 1.1f, 1.15f, 1f),
-        bandLum = f(0.02f, 0.02f, 0f, 0f, -0.02f, 0f),
-        highTint = f(0.005f, 0f, -0.005f))),
+        bandSat = f(0.98f, 0.98f, 1.08f, 1.12f, 1.2f, 1.02f),
+        bandLum = f(0.02f, 0.02f, 0f, 0f, -0.03f, 0f),
+        highTint = f(0.006f, 0f, -0.006f))),
     CLASSIC_CHROME("Classic Chrome", FilmParams(
-        sat = 0.8f, contrast = 0.25f, lift = 0.015f,
-        hue = f(5f, -4f, -12f, 0f, -8f, 0f),
-        bandSat = f(0.85f, 0.75f, 0.65f, 0.85f, 0.8f, 0.7f),
-        bandLum = f(-0.02f, 0f, -0.03f, -0.02f, -0.07f, 0f),
-        shadowTint = f(-0.01f, 0.002f, 0.01f),
-        highTint = f(0.01f, 0.004f, -0.008f))),
+        sat = 0.92f, contrast = 0.35f, lift = 0.01f,
+        hue = f(6f, -5f, -14f, 0f, -10f, 0f),
+        bandSat = f(0.95f, 0.82f, 0.7f, 0.95f, 0.9f, 0.8f),
+        bandLum = f(-0.03f, 0f, -0.04f, -0.02f, -0.08f, 0f),
+        shadowTint = f(-0.015f, 0.004f, 0.015f),
+        highTint = f(0.015f, 0.006f, -0.012f))),
     REALA_ACE("Reala Ace", FilmParams(
-        sat = 1.05f, contrast = 0.22f,
-        bandSat = f(1f, 1f, 0.95f, 1.05f, 1.05f, 1f))),
+        sat = 1.15f, contrast = 0.28f,
+        bandSat = f(1.05f, 1.02f, 0.98f, 1.08f, 1.08f, 1.02f))),
     PRO_NEG_HI("Pro Neg. Hi", FilmParams(
-        sat = 0.92f, contrast = 0.2f,
+        sat = 1.0f, contrast = 0.28f,
         hue = f(3f, 0f, 0f, 0f, 0f, 0f),
-        bandSat = f(0.92f, 0.9f, 0.9f, 0.95f, 0.95f, 0.9f))),
+        bandSat = f(0.98f, 0.95f, 0.95f, 1f, 1f, 0.95f))),
     PRO_NEG_STD("Pro Neg. Std", FilmParams(
-        sat = 0.82f, contrast = -0.02f, lift = 0.01f,
-        bandSat = f(0.88f, 0.88f, 0.88f, 0.88f, 0.88f, 0.88f))),
+        sat = 0.9f, contrast = 0.05f, lift = 0.01f,
+        bandSat = f(0.92f, 0.92f, 0.92f, 0.92f, 0.92f, 0.92f))),
     CLASSIC_NEG("Classic Neg.", FilmParams(
-        sat = 0.88f, contrast = 0.38f, lift = 0.01f,
-        hue = f(-6f, 8f, 10f, 0f, -6f, -4f),
-        bandSat = f(1f, 0.85f, 0.8f, 1f, 0.9f, 0.9f),
-        bandLum = f(0f, -0.02f, -0.03f, 0f, -0.03f, 0f),
-        shadowTint = f(-0.015f, 0.008f, 0.015f),
-        highTint = f(0.02f, 0.005f, -0.012f))),
+        sat = 1.02f, contrast = 0.5f, lift = 0.01f,
+        hue = f(-8f, 10f, 14f, 0f, -8f, -6f),
+        bandSat = f(1.1f, 0.9f, 0.85f, 1.05f, 0.95f, 0.95f),
+        bandLum = f(0f, -0.02f, -0.04f, 0f, -0.04f, 0f),
+        shadowTint = f(-0.02f, 0.012f, 0.02f),
+        highTint = f(0.025f, 0.006f, -0.015f))),
     NOSTALGIC_NEG("Nostalgic Neg.", FilmParams(
-        sat = 0.95f, contrast = 0.12f, lift = 0.015f,
+        sat = 1.05f, contrast = 0.18f, lift = 0.015f,
         hue = f(3f, -3f, -4f, 0f, 0f, 0f),
-        bandSat = f(1f, 1f, 0.85f, 0.9f, 0.85f, 0.9f),
+        bandSat = f(1.08f, 1.05f, 0.9f, 0.95f, 0.9f, 0.95f),
         shadowTint = f(0.004f, 0f, -0.004f),
-        highTint = f(0.035f, 0.015f, -0.035f))),
+        highTint = f(0.045f, 0.02f, -0.04f))),
     ETERNA("Eterna / Cinema", FilmParams(
-        sat = 0.62f, contrast = -0.15f, lift = 0.035f,
+        sat = 0.72f, contrast = -0.1f, lift = 0.03f,
         hue = f(0f, 0f, 8f, 0f, -4f, 0f),
-        bandSat = f(0.85f, 0.8f, 0.75f, 0.9f, 0.85f, 0.8f),
-        shadowTint = f(-0.012f, 0.004f, 0.01f),
-        highTint = f(0.008f, 0.004f, -0.006f))),
+        bandSat = f(0.9f, 0.85f, 0.8f, 0.95f, 0.9f, 0.85f),
+        shadowTint = f(-0.014f, 0.005f, 0.012f),
+        highTint = f(0.01f, 0.005f, -0.008f))),
     ETERNA_BB("Eterna Bleach Bypass", FilmParams(
-        sat = 0.32f, contrast = 0.45f, lift = 0.005f,
+        sat = 0.38f, contrast = 0.5f, lift = 0.005f,
         shadowTint = f(-0.005f, 0f, 0.005f))),
-    ACROS("Acros", FilmParams(contrast = 0.3f, mono = true, monoW = f(0.3f, 0.59f, 0.11f))),
-    ACROS_YE("Acros + Ye", FilmParams(contrast = 0.3f, mono = true, monoW = f(0.4f, 0.5f, 0.1f))),
-    ACROS_R("Acros + R", FilmParams(contrast = 0.35f, mono = true, monoW = f(0.6f, 0.35f, 0.05f))),
-    ACROS_G("Acros + G", FilmParams(contrast = 0.3f, mono = true, monoW = f(0.25f, 0.65f, 0.1f))),
-    MONOCHROME("Monochrome", FilmParams(contrast = 0.15f, mono = true)),
-    SEPIA("Sepia", FilmParams(contrast = 0.1f, lift = 0.02f, mono = true, monoTone = f(1.08f, 0.98f, 0.82f))),
+    ACROS("Acros", FilmParams(contrast = 0.35f, mono = true, monoW = f(0.3f, 0.59f, 0.11f))),
+    ACROS_YE("Acros + Ye", FilmParams(contrast = 0.35f, mono = true, monoW = f(0.4f, 0.5f, 0.1f))),
+    ACROS_R("Acros + R", FilmParams(contrast = 0.4f, mono = true, monoW = f(0.6f, 0.35f, 0.05f))),
+    ACROS_G("Acros + G", FilmParams(contrast = 0.35f, mono = true, monoW = f(0.25f, 0.65f, 0.1f))),
+    MONOCHROME("Monochrome", FilmParams(contrast = 0.2f, mono = true)),
+    SEPIA("Sepia", FilmParams(contrast = 0.12f, lift = 0.02f, mono = true, monoTone = f(1.08f, 0.98f, 0.82f))),
 }
 
 enum class WbMode(val label: String, val kelvin: Int?) {
@@ -116,6 +118,8 @@ data class Recipe(
     val wbR: Int = 0,               // -9 .. +9
     val wbB: Int = 0,               // -9 .. +9
     val ev: Float = 0f,             // exposure compensation
+    val warmth: Int = 0,            // golden highlight warmth 0..10 (app extra)
+    val glow: Int = 0,              // glow around bright light 0..10 (app extra)
     val credit: String = "",
     val builtIn: Boolean = false,
 ) {
@@ -134,6 +138,8 @@ data class Recipe(
         if (chromeBlue > 0) parts += "CC Blue ${lvl[chromeBlue]}"
         if (sharpness != 0) parts += "Sharp ${s(sharpness)}"
         if (clarity != 0) parts += "Clarity ${s(clarity)}"
+        if (warmth != 0) parts += "Warmth $warmth"
+        if (glow != 0) parts += "Glow $glow"
         if (ev != 0f) parts += "EV ${evText(ev)}"
         return parts.joinToString(" · ")
     }
@@ -146,6 +152,7 @@ data class Recipe(
         put("chrome", chrome); put("chromeBlue", chromeBlue)
         put("wb", wb.name); put("kelvin", kelvin); put("wbR", wbR); put("wbB", wbB)
         put("ev", ev.toDouble()); put("credit", credit)
+        put("warmth", warmth); put("glow", glow)
     }
 
     companion object {
@@ -169,6 +176,8 @@ data class Recipe(
             wbB = o.optInt("wbB", 0),
             ev = o.optDouble("ev", 0.0).toFloat(),
             credit = o.optString("credit", ""),
+            warmth = o.optInt("warmth", 0),
+            glow = o.optInt("glow", 0),
             builtIn = false,
         )
 
@@ -198,6 +207,18 @@ data class Recipe(
 object BuiltIns {
     private const val FXW = "Fuji X Weekly"
     val list = listOf(
+        Recipe("b_golden_hour", "Golden Hour", FilmSim.CLASSIC_CHROME,
+            dr = 400, highlight = 0.5f, shadow = 2f, color = 2, clarity = -1,
+            grain = 1, chrome = 2, chromeBlue = 1, wb = WbMode.DAYLIGHT, wbR = 3, wbB = -5, ev = 0.33f,
+            warmth = 6, glow = 3, credit = "FujiSim Cam", builtIn = true),
+        Recipe("b_cinematic_gold", "Cinematic Gold", FilmSim.CLASSIC_NEG,
+            dr = 400, color = 3, clarity = -4,
+            grain = 2, chrome = 0, chromeBlue = 1, wb = WbMode.DAYLIGHT, wbR = 4, wbB = -5,
+            credit = "Gfischa", builtIn = true),
+        Recipe("b_summer_chrome", "Summer Chrome", FilmSim.CLASSIC_CHROME,
+            dr = 400, highlight = -2f, shadow = -2f, color = 4, clarity = -4,
+            grain = 2, grainLarge = true, chrome = 2, chromeBlue = 2, wb = WbMode.AUTO, wbR = 5, wbB = -6,
+            credit = "Osan Bilgi", builtIn = true),
         Recipe("b_reggies_portra", "Reggie's Portra", FilmSim.CLASSIC_CHROME,
             dr = 200, highlight = -1f, shadow = -1f, color = 2, sharpness = -2,
             grain = 1, chrome = 2, chromeBlue = 1, wb = WbMode.AUTO, wbR = 2, wbB = -4,

@@ -9,21 +9,32 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.media.ExifInterface
+import android.media.ThumbnailUtils
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Size
+import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.OrientationEventListener
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -36,17 +47,28 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.DynamicRange
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCase
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -54,41 +76,75 @@ import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
+    // Views
     private lateinit var previewView: PreviewView
+    private lateinit var grid: GridOverlay
     private lateinit var recipeBar: LinearLayout
     private lateinit var recipeInfo: TextView
     private lateinit var originalBadge: TextView
+    private lateinit var recTimer: TextView
     private lateinit var shutter: View
     private lateinit var thumb: ImageView
     private lateinit var flash: View
     private lateinit var editorContainer: FrameLayout
+    private lateinit var zoomBar: LinearLayout
+    private lateinit var gridBtn: TextView
+    private lateinit var lookModeBtn: TextView
+    private lateinit var logBtn: TextView
+    private lateinit var photoModeBtn: TextView
+    private lateinit var videoModeBtn: TextView
+    private lateinit var processingOverlay: View
+    private lateinit var processingText: TextView
+    private lateinit var processingBar: ProgressBar
 
+    // State
     private lateinit var store: RecipeStore
+    private lateinit var prefs: AppPrefs
     private var recipes: List<Recipe> = emptyList()
-    private lateinit var current: Recipe          // selected (saved) recipe
-    private lateinit var live: Recipe             // what's on screen (may include unsaved edits)
+    private lateinit var current: Recipe       // selected saved recipe
+    private lateinit var live: Recipe          // on screen (may include unsaved edits)
+    private var stylesMode = false
+    private var currentStyle = PhotoStyle.STANDARD
+    private var styleLive = StyleSettings()
+    private var videoMode = false
+    private var logMode = false
+    private var hlgSupported = false
     private var editing = false
     private var showOriginal = false
+    private var lookNow = Look()
 
+    // Camera
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var recording: Recording? = null
+    private var recordStart = 0L
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var awbModes: IntArray? = null
     private var lastCamKey = ""
+    private var zoomRatio = 1f
     private var lastUri: Uri? = null
+    private var lastMime = "image/jpeg"
     private val previewShader = FilmShader()
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val permissionLauncher =
+    private val cameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startCamera()
             else Toast.makeText(this, "Camera permission is needed", Toast.LENGTH_LONG).show()
+        }
+    private val audioPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted) Toast.makeText(this, "Videos will be recorded without sound", Toast.LENGTH_SHORT).show()
         }
 
     private val orientationListener by lazy {
@@ -102,62 +158,157 @@ class MainActivity : AppCompatActivity() {
                     else -> Surface.ROTATION_0
                 }
                 imageCapture?.targetRotation = rotation
+                videoCapture?.targetRotation = rotation
             }
         }
     }
+
+    // Level sensor
+    private val sensorManager by lazy { getSystemService(SENSOR_SERVICE) as SensorManager }
+    private val gravityListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val gx = event.values[0]
+            val gy = event.values[1]
+            grid.rollDegrees = Math.toDegrees(atan2(gx.toDouble(), gy.toDouble())).toFloat()
+        }
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
+    // Moving grain in the viewfinder
+    private var lastGrainFrame = 0L
+    private val grainTicker = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (lookNow.grain > 0f && !showOriginal && frameTimeNanos - lastGrainFrame > 33_000_000L) {
+                lastGrainFrame = frameTimeNanos
+                pushPreviewShader(frameTimeNanos / 1e9f)
+            }
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    private val recTick = object : Runnable {
+        override fun run() {
+            if (recording == null) return
+            val s = (SystemClock.elapsedRealtime() - recordStart) / 1000
+            recTimer.text = String.format(Locale.US, "● %02d:%02d", s / 60, s % 60)
+            mainHandler.postDelayed(this, 500)
+        }
+    }
+
+    // ------------------------------------------------------------------ Lifecycle
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         previewView = findViewById(R.id.preview)
+        grid = findViewById(R.id.grid)
         recipeBar = findViewById(R.id.recipeBar)
         recipeInfo = findViewById(R.id.recipeInfo)
         originalBadge = findViewById(R.id.originalBadge)
+        recTimer = findViewById(R.id.recTimer)
         shutter = findViewById(R.id.shutter)
         thumb = findViewById(R.id.thumb)
         flash = findViewById(R.id.flash)
         editorContainer = findViewById(R.id.editorContainer)
+        zoomBar = findViewById(R.id.zoomBar)
+        gridBtn = findViewById(R.id.gridBtn)
+        lookModeBtn = findViewById(R.id.lookModeBtn)
+        logBtn = findViewById(R.id.logBtn)
+        photoModeBtn = findViewById(R.id.photoModeBtn)
+        videoModeBtn = findViewById(R.id.videoModeBtn)
+        processingOverlay = findViewById(R.id.processingOverlay)
+        processingText = findViewById(R.id.processingText)
+        processingBar = findViewById(R.id.processingBar)
 
-        // TextureView mode so the RenderEffect (our film shader) applies to the camera image.
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
 
         store = RecipeStore(this)
+        prefs = AppPrefs(this)
         reloadRecipes()
         current = recipes.firstOrNull { it.id == store.selectedId } ?: recipes.first()
         live = current
+        stylesMode = prefs.stylesMode
+        currentStyle = prefs.selectedStyle
+        styleLive = prefs.styleSettings(currentStyle)
+        grid.mode = GridOverlay.Mode.values().getOrElse(prefs.gridMode) { GridOverlay.Mode.OFF }
+
         rebuildChips()
+        updateModeButtons()
 
-        previewView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyRecipe(live) }
+        previewView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> refreshLook() }
 
-        shutter.setOnClickListener { takePhoto() }
+        shutter.setOnClickListener { if (videoMode) toggleRecording() else takePhoto() }
         findViewById<View>(R.id.editBtn).setOnClickListener { if (editing) closeEditor() else openEditor() }
         findViewById<View>(R.id.flipBtn).setOnClickListener {
+            if (recording != null) return@setOnClickListener
             lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
                 CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+            zoomRatio = 1f
             startCamera()
         }
-        thumb.setOnClickListener { openLastPhoto() }
+        thumb.setOnClickListener { openLast() }
+        gridBtn.setOnClickListener {
+            val modes = GridOverlay.Mode.values()
+            grid.mode = modes[(grid.mode.ordinal + 1) % modes.size]
+            prefs.gridMode = grid.mode.ordinal
+            updateModeButtons()
+            updateLevelSensor()
+        }
+        lookModeBtn.setOnClickListener {
+            if (recording != null || editing) return@setOnClickListener
+            stylesMode = !stylesMode
+            prefs.stylesMode = stylesMode
+            lastCamKey = ""
+            rebuildChips()
+            updateModeButtons()
+            refreshLook()
+        }
+        logBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            logMode = !logMode
+            updateModeButtons()
+            startCamera()
+        }
+        photoModeBtn.setOnClickListener { setVideoMode(false) }
+        videoModeBtn.setOnClickListener { setVideoMode(true) }
         setupCompareButton()
-        setupTapToFocus()
+        setupPreviewGestures()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (editing) closeEditor() else finish()
+                when {
+                    editing -> closeEditor()
+                    recording != null -> toggleRecording()
+                    else -> finish()
+                }
             }
         })
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
         } else {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
+            cameraPermission.launch(Manifest.permission.CAMERA)
         }
     }
 
     override fun onStart() {
         super.onStart()
         orientationListener.enable()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateLevelSensor()
+        Choreographer.getInstance().postFrameCallback(grainTicker)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sensorManager.unregisterListener(gravityListener)
+        Choreographer.getInstance().removeFrameCallback(grainTicker)
+        if (recording != null) toggleRecording()
     }
 
     override fun onStop() {
@@ -170,41 +321,106 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor.shutdown()
     }
 
-    // ---------------------------------------------------------------- Camera
+    private fun updateLevelSensor() {
+        sensorManager.unregisterListener(gravityListener)
+        if (grid.mode == GridOverlay.Mode.THIRDS_LEVEL) {
+            sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)?.let {
+                sensorManager.registerListener(gravityListener, it, SensorManager.SENSOR_DELAY_UI)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ Camera
+
+    private fun setVideoMode(on: Boolean) {
+        if (on == videoMode || recording != null) return
+        videoMode = on
+        if (on && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+        updateModeButtons()
+        startCamera()
+    }
 
     private fun startCamera() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get()
-            val previewSelector = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+            val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+            val ratio = if (videoMode) AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+            else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+            grid.imageAspect = if (videoMode) 9f / 16f else 3f / 4f
+
+            val preview = Preview.Builder()
+                .setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build())
                 .build()
-            val preview = Preview.Builder().setResolutionSelector(previewSelector).build()
             preview.setSurfaceProvider(previewView.surfaceProvider)
 
-            val captureSelector = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-                .setResolutionStrategy(
-                    ResolutionStrategy(Size(4000, 3000), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
-                )
-                .build()
-            val capture = ImageCapture.Builder()
-                .setResolutionSelector(captureSelector)
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                .setJpegQuality(95)
-                .build()
-            imageCapture = capture
+            val useCase: UseCase
+            if (videoMode) {
+                val info = runCatching { selector.filter(provider.availableCameraInfos).firstOrNull() }.getOrNull()
+                hlgSupported = info != null && runCatching {
+                    Recorder.getVideoCapabilities(info).supportedDynamicRanges.contains(DynamicRange.HLG_10_BIT)
+                }.getOrDefault(false)
+                if (logMode && !hlgSupported) {
+                    Toast.makeText(this, "10-bit log isn't available to apps on this camera — recording standard video", Toast.LENGTH_LONG).show()
+                }
+                val recorder = Recorder.Builder()
+                    .setQualitySelector(QualitySelector.from(Quality.FHD, FallbackStrategy.lowerQualityOrHigherThan(Quality.FHD)))
+                    .build()
+                val builder = VideoCapture.Builder(recorder)
+                if (logMode && hlgSupported) builder.setDynamicRange(DynamicRange.HLG_10_BIT)
+                val vc = builder.build()
+                videoCapture = vc
+                imageCapture = null
+                useCase = vc
+            } else {
+                val capture = ImageCapture.Builder()
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder()
+                            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                            .setResolutionStrategy(
+                                ResolutionStrategy(Size(4000, 3000), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
+                            ).build()
+                    )
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setJpegQuality(95)
+                    .build()
+                imageCapture = capture
+                videoCapture = null
+                useCase = capture
+            }
 
-            val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
             try {
                 provider.unbindAll()
-                camera = provider.bindToLifecycle(this, selector, preview, capture)
-                awbModes = readAwbModes()
-                lastCamKey = ""
-                applyRecipe(live)
+                camera = provider.bindToLifecycle(this, selector, preview, useCase)
             } catch (e: Exception) {
-                Toast.makeText(this, "Camera error: ${e.message}", Toast.LENGTH_LONG).show()
+                // Fallback: e.g. HLG combo not supported — retry with standard video.
+                if (videoMode && logMode) {
+                    try {
+                        val vc = VideoCapture.Builder(
+                            Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.FHD)).build()
+                        ).build()
+                        videoCapture = vc
+                        provider.unbindAll()
+                        camera = provider.bindToLifecycle(this, selector, preview, vc)
+                        hlgSupported = false
+                        Toast.makeText(this, "Log mode not supported here — recording standard video", Toast.LENGTH_LONG).show()
+                    } catch (e2: Exception) {
+                        Toast.makeText(this, "Camera error: ${e2.message}", Toast.LENGTH_LONG).show()
+                        return@addListener
+                    }
+                } else {
+                    Toast.makeText(this, "Camera error: ${e.message}", Toast.LENGTH_LONG).show()
+                    return@addListener
+                }
             }
+            awbModes = readAwbModes()
+            lastCamKey = ""
+            setupZoom()
+            updateModeButtons()
+            refreshLook()
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -218,108 +434,238 @@ class MainActivity : AppCompatActivity() {
     }
 
     @OptIn(ExperimentalCamera2Interop::class)
-    private fun applyCameraSettings(r: Recipe, plan: WhiteBalance.Plan) {
+    private fun applyCameraSettings(awbMode: Int, ev: Float) {
         val cam = camera ?: return
-        val key = "${plan.awbMode}|${r.ev}"
+        val key = "$awbMode|$ev"
         if (key == lastCamKey) return
         lastCamKey = key
-
         val exposure = cam.cameraInfo.exposureState
         if (exposure.isExposureCompensationSupported) {
             val step = exposure.exposureCompensationStep.toFloat()
             if (step > 0f) {
                 val range = exposure.exposureCompensationRange
-                val idx = (r.ev / step).roundToInt().coerceIn(range.lower, range.upper)
-                cam.cameraControl.setExposureCompensationIndex(idx)
+                cam.cameraControl.setExposureCompensationIndex((ev / step).roundToInt().coerceIn(range.lower, range.upper))
             }
         }
         runCatching {
-            val options = CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, plan.awbMode)
-                .build()
-            Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(options)
+            Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(
+                CaptureRequestOptions.Builder().setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode).build()
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------ Zoom & gestures
+
+    private fun setupZoom() {
+        val cam = camera ?: return
+        val state = cam.cameraInfo.zoomState
+        state.removeObservers(this)
+        val zs = state.value
+        val minZ = zs?.minZoomRatio ?: 1f
+        val maxZ = zs?.maxZoomRatio ?: 1f
+        zoomRatio = zoomRatio.coerceIn(minZ, maxZ)
+        cam.cameraControl.setZoomRatio(zoomRatio)
+
+        zoomBar.removeAllViews()
+        val stops = mutableListOf<Float>()
+        if (minZ < 0.95f) stops += (minZ * 10f).roundToInt() / 10f
+        listOf(1f, 2f, 3.2f, 5f).filter { it <= maxZ + 0.01f }.forEach { stops += it }
+        for (z in stops) {
+            val tv = TextView(this).apply {
+                text = formatZoom(z)
+                tag = z
+                textSize = 12f
+                setTextColor(Color.WHITE)
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                setOnClickListener {
+                    zoomRatio = z
+                    camera?.cameraControl?.setZoomRatio(z)
+                }
+            }
+            zoomBar.addView(tv)
+        }
+        zoomBar.visibility = if (stops.size > 1 || maxZ > 1.05f) View.VISIBLE else View.GONE
+        state.observe(this) { z -> highlightZoom(z.zoomRatio) }
+    }
+
+    private fun formatZoom(z: Float): String {
+        val r = (z * 10f).roundToInt() / 10f
+        return if (abs(r - r.roundToInt()) < 0.05f) "${r.roundToInt()}×" else "$r×"
+    }
+
+    private fun highlightZoom(current: Float) {
+        var nearest: View? = null
+        var best = Float.MAX_VALUE
+        for (i in 0 until zoomBar.childCount) {
+            val v = zoomBar.getChildAt(i)
+            val z = v.tag as? Float ?: continue
+            val d = abs(z - current)
+            if (d < best) { best = d; nearest = v }
+        }
+        for (i in 0 until zoomBar.childCount) {
+            val v = zoomBar.getChildAt(i) as TextView
+            val z = v.tag as? Float ?: continue
+            val active = v == nearest
+            v.setTextColor(if (active) Color.BLACK else Color.WHITE)
+            v.background = if (active) GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat(); setColor(Color.parseColor("#FFC94A"))
+            } else null
+            v.text = if (active && best > 0.05f) formatZoom(current) else formatZoom(z)
         }
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun setupTapToFocus() {
+    private fun setupPreviewGestures() {
+        var scaled = false
+        val scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val cam = camera ?: return false
+                val zs = cam.cameraInfo.zoomState.value ?: return false
+                zoomRatio = (zs.zoomRatio * detector.scaleFactor).coerceIn(zs.minZoomRatio, zs.maxZoomRatio)
+                cam.cameraControl.setZoomRatio(zoomRatio)
+                scaled = true
+                return true
+            }
+        })
         previewView.setOnTouchListener { v, event ->
-            if (event.action == MotionEvent.ACTION_UP) {
-                val point = previewView.meteringPointFactory.createPoint(event.x, event.y)
-                val action = FocusMeteringAction.Builder(point)
-                    .setAutoCancelDuration(4, TimeUnit.SECONDS)
-                    .build()
-                camera?.cameraControl?.startFocusAndMetering(action)
-                v.performClick()
+            scaleDetector.onTouchEvent(event)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> scaled = false
+                MotionEvent.ACTION_UP -> {
+                    if (!scaled) {
+                        val point = previewView.meteringPointFactory.createPoint(event.x, event.y)
+                        camera?.cameraControl?.startFocusAndMetering(
+                            FocusMeteringAction.Builder(point).setAutoCancelDuration(4, TimeUnit.SECONDS).build()
+                        )
+                        v.performClick()
+                    }
+                }
             }
             true
         }
     }
 
-    // ---------------------------------------------------------------- Recipes
+    // ------------------------------------------------------------------ Looks
 
     private fun reloadRecipes() {
         recipes = store.loadCustom() + BuiltIns.list
     }
 
-    private fun applyRecipe(r: Recipe) {
-        live = r
-        val plan = WhiteBalance.plan(r, awbModes)
-        val w = previewView.width.toFloat().coerceAtLeast(1f)
-        val h = previewView.height.toFloat().coerceAtLeast(1f)
-        previewShader.set(r, plan.gains, w, h, 1f, if (showOriginal) 0f else 1f)
-        previewView.setRenderEffect(previewShader.renderEffect())
-        val credit = if (r.credit.isNotBlank()) "  ·  by ${r.credit}" else ""
-        recipeInfo.text = "${r.name}$credit\n${r.summary()}"
-        applyCameraSettings(r, plan)
+    /** Rebuild the current look from the recipe/style on screen and push it everywhere. */
+    private fun refreshLook() {
+        if (stylesMode) {
+            lookNow = Look.fromStyle(currentStyle, styleLive)
+            applyCameraSettings(CaptureRequest.CONTROL_AWB_MODE_AUTO, 0f)
+            recipeInfo.text = "${currentStyle.label} style\n" + styleSummary(styleLive)
+        } else {
+            val plan = WhiteBalance.plan(live, awbModes)
+            lookNow = Look.fromRecipe(live, plan.gains)
+            applyCameraSettings(plan.awbMode, live.ev)
+            val credit = if (live.credit.isNotBlank()) "  ·  by ${live.credit}" else ""
+            recipeInfo.text = "${live.name}$credit\n${live.summary()}"
+        }
+        pushPreviewShader(SystemClock.elapsedRealtime() / 1000f)
     }
 
-    private fun select(r: Recipe) {
-        current = r
-        store.selectedId = r.id
-        applyRecipe(r)
-        rebuildChips()
+    private fun styleSummary(s: StyleSettings): String {
+        fun pct(v: Float) = "${if (v > 0) "+" else ""}${(v * 100).roundToInt()}"
+        return "Tone ${pct(s.tone)} · Colour ${pct(s.color)} · Palette ${(s.palette * 100).roundToInt()}% · " +
+            "Grain ${(s.grain * 100).roundToInt()} · Detail ${pct(s.detail)}"
+    }
+
+    private fun pushPreviewShader(time: Float) {
+        val w = previewView.width.toFloat().coerceAtLeast(1f)
+        val h = previewView.height.toFloat().coerceAtLeast(1f)
+        previewShader.set(lookNow, w, h, 1f, time, if (showOriginal) 0f else 1f)
+        previewView.setRenderEffect(previewShader.renderEffect())
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
 
+    private fun chip(label: String, selected: Boolean, onClick: () -> Unit, onLong: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTextColor(if (selected) Color.BLACK else Color.WHITE)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(if (selected) Color.parseColor("#FFC94A") else Color.parseColor("#2A2A2A"))
+            }
+            setOnClickListener { if (!editing && recording == null) onClick() }
+            setOnLongClickListener {
+                if (!editing && recording == null) { onClick(); openEditor() }
+                true
+            }
+        }
+
     private fun rebuildChips() {
         recipeBar.removeAllViews()
-        for (r in recipes) {
-            val selected = r.id == current.id
-            val chip = TextView(this).apply {
-                text = if (r.builtIn) r.name else "★ ${r.name}"
-                textSize = 13f
-                setTextColor(if (selected) Color.BLACK else Color.WHITE)
-                setPadding(dp(14), dp(8), dp(14), dp(8))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(16).toFloat()
-                    setColor(if (selected) Color.parseColor("#FFC94A") else Color.parseColor("#2A2A2A"))
-                }
-                setOnClickListener { if (!editing) select(r) }
-                setOnLongClickListener {
-                    if (!editing) { select(r); openEditor() }
-                    true
-                }
+        val lp = { LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(8) } }
+        if (stylesMode) {
+            for (st in PhotoStyle.values()) {
+                recipeBar.addView(chip(st.label, st == currentStyle, {
+                    currentStyle = st
+                    prefs.selectedStyle = st
+                    styleLive = prefs.styleSettings(st)
+                    rebuildChips()
+                    refreshLook()
+                }, {}), lp())
             }
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(8) }
-            recipeBar.addView(chip, lp)
+        } else {
+            for (r in recipes) {
+                recipeBar.addView(chip(if (r.builtIn) r.name else "★ ${r.name}", r.id == current.id, {
+                    current = r
+                    live = r
+                    store.selectedId = r.id
+                    rebuildChips()
+                    refreshLook()
+                }, {}), lp())
+            }
         }
     }
 
-    private fun openEditor() {
-        editing = true
-        val panel = EditorPanel(
-            this, current,
-            onChange = { applyRecipe(it) },
-            onSave = { r, asNew -> saveRecipe(r, asNew) },
-            onDelete = { deleteRecipe(it) },
-            onClose = { closeEditor() },
+    private fun updateModeButtons() {
+        lookModeBtn.text = if (stylesMode) "STYLES" else "FUJI"
+        gridBtn.text = grid.mode.label
+        photoModeBtn.setTextColor(if (!videoMode) Color.parseColor("#FFC94A") else Color.WHITE)
+        videoModeBtn.setTextColor(if (videoMode) Color.parseColor("#FFC94A") else Color.WHITE)
+        logBtn.visibility = if (videoMode) View.VISIBLE else View.INVISIBLE
+        logBtn.text = when {
+            !logMode -> "LOG off"
+            hlgSupported -> "LOG 10-bit"
+            else -> "LOG (std)"
+        }
+        logBtn.setTextColor(if (logMode) Color.parseColor("#FFC94A") else Color.WHITE)
+        shutter.setBackgroundResource(
+            when {
+                recording != null -> R.drawable.shutter_recording
+                videoMode -> R.drawable.shutter_video
+                else -> R.drawable.shutter
+            }
         )
+    }
+
+    private fun openEditor() {
+        if (recording != null) return
+        editing = true
+        val view = if (stylesMode) {
+            StylePanel(this, currentStyle, styleLive,
+                onChange = { s ->
+                    styleLive = s
+                    prefs.saveStyleSettings(currentStyle, s)
+                    refreshLook()
+                },
+                onClose = { closeEditor() }).view
+        } else {
+            EditorPanel(this, current,
+                onChange = { live = it; refreshLook() },
+                onSave = { r, asNew -> saveRecipe(r, asNew) },
+                onDelete = { deleteRecipe(it) },
+                onClose = { closeEditor() }).view
+        }
         editorContainer.removeAllViews()
-        editorContainer.addView(panel.view)
+        editorContainer.addView(view)
         editorContainer.visibility = View.VISIBLE
     }
 
@@ -327,7 +673,8 @@ class MainActivity : AppCompatActivity() {
         editing = false
         editorContainer.visibility = View.GONE
         editorContainer.removeAllViews()
-        applyRecipe(current)
+        if (!stylesMode) live = current
+        refreshLook()
     }
 
     private fun saveRecipe(r: Recipe, asNew: Boolean) {
@@ -338,6 +685,7 @@ class MainActivity : AppCompatActivity() {
         store.saveCustom(custom)
         reloadRecipes()
         current = toSave
+        live = toSave
         store.selectedId = toSave.id
         closeEditor()
         rebuildChips()
@@ -348,6 +696,7 @@ class MainActivity : AppCompatActivity() {
         store.saveCustom(store.loadCustom().filter { it.id != r.id })
         reloadRecipes()
         current = recipes.first()
+        live = current
         store.selectedId = current.id
         closeEditor()
         rebuildChips()
@@ -356,23 +705,23 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("ClickableViewAccessibility")
     private fun setupCompareButton() {
         findViewById<View>(R.id.compareBtn).setOnTouchListener { _, e ->
-            when (e.action) {
+            when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     showOriginal = true
                     originalBadge.visibility = View.VISIBLE
-                    applyRecipe(live)
+                    pushPreviewShader(0f)
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     showOriginal = false
                     originalBadge.visibility = View.GONE
-                    applyRecipe(live)
+                    pushPreviewShader(0f)
                 }
             }
             true
         }
     }
 
-    // ---------------------------------------------------------------- Capture
+    // ------------------------------------------------------------------ Photo
 
     private fun takePhoto() {
         val capture = imageCapture ?: return
@@ -380,8 +729,9 @@ class MainActivity : AppCompatActivity() {
         flash.alpha = 0.85f
         flash.animate().alpha(0f).setDuration(250).start()
 
-        val recipe = live
-        val awb = awbModes
+        val look = lookNow
+        val name = if (stylesMode) "${currentStyle.label} style" else live.name
+        val desc = if (stylesMode) styleSummary(styleLive) else live.summary()
         val previewWidth = previewView.width.coerceAtLeast(1)
 
         capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
@@ -391,12 +741,12 @@ class MainActivity : AppCompatActivity() {
                     val raw = try { image.toBitmap() } finally { image.close() }
                     val upright = prepare(raw, rotation)
                     val scale = (min(upright.width, upright.height).toFloat() / previewWidth).coerceAtLeast(1f)
-                    val plan = WhiteBalance.plan(recipe, awb)
-                    val out = FilmShader.process(upright, recipe, plan.gains, scale)
-                    val uri = saveJpeg(out, recipe)
+                    val out = FilmShader.process(upright, look, scale)
+                    val uri = saveJpeg(out, "$name: $desc")
                     val small = Bitmap.createScaledBitmap(out, 160, (160f * out.height / out.width).roundToInt(), true)
                     runOnUiThread {
                         lastUri = uri
+                        lastMime = "image/jpeg"
                         thumb.setImageBitmap(small)
                         shutter.isEnabled = true
                     }
@@ -417,22 +767,18 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    /** Rotate upright and keep within GPU texture limits. */
     private fun prepare(src: Bitmap, rotation: Int): Bitmap {
-        val maxSide = 4096f
-        val sc = min(1f, maxSide / max(src.width, src.height))
+        val sc = min(1f, 4096f / max(src.width, src.height))
         if (rotation == 0 && sc >= 1f) return src
-        val m = Matrix().apply {
-            postRotate(rotation.toFloat())
-            postScale(sc, sc)
-        }
+        val m = Matrix().apply { postRotate(rotation.toFloat()); postScale(sc, sc) }
         return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
     }
 
-    private fun saveJpeg(bmp: Bitmap, recipe: Recipe): Uri {
-        val name = "FUJISIM_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    private fun timestamp() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+
+    private fun saveJpeg(bmp: Bitmap, description: String): Uri {
         val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, "$name.jpg")
+            put(MediaStore.Images.Media.DISPLAY_NAME, "FUJISIM_${timestamp()}.jpg")
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
             put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/FujiSim")
             put(MediaStore.Images.Media.DATE_TAKEN, System.currentTimeMillis())
@@ -443,30 +789,119 @@ class MainActivity : AppCompatActivity() {
             ?: throw IllegalStateException("Could not create gallery entry")
         resolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
             ?: throw IllegalStateException("Could not write photo")
-
         runCatching {
             resolver.openFileDescriptor(uri, "rw")?.use { pfd ->
                 val exif = ExifInterface(pfd.fileDescriptor)
-                exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, "${recipe.name}: ${recipe.summary()}")
+                exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, description)
                 exif.setAttribute(ExifInterface.TAG_SOFTWARE, "FujiSim Cam")
                 exif.saveAttributes()
             }
         }
-
         values.clear()
         values.put(MediaStore.Images.Media.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
         return uri
     }
 
-    private fun openLastPhoto() {
+    // ------------------------------------------------------------------ Video
+
+    @SuppressLint("MissingPermission")
+    private fun toggleRecording() {
+        val active = recording
+        if (active != null) {
+            active.stop()
+            recording = null
+            updateModeButtons()
+            return
+        }
+        val vc = videoCapture ?: return
+        val raw = File(cacheDir, "raw_${timestamp()}.mp4")
+        val look = lookNow
+        var pending = vc.output.prepareRecording(this, FileOutputOptions.Builder(raw).build())
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            pending = pending.withAudioEnabled()
+        }
+        recording = pending.start(ContextCompat.getMainExecutor(this)) { event ->
+            when (event) {
+                is VideoRecordEvent.Start -> {
+                    recordStart = SystemClock.elapsedRealtime()
+                    recTimer.visibility = View.VISIBLE
+                    mainHandler.post(recTick)
+                }
+                is VideoRecordEvent.Finalize -> {
+                    recTimer.visibility = View.GONE
+                    recording = null
+                    updateModeButtons()
+                    if (raw.exists() && raw.length() > 0) {
+                        styleVideo(raw, look)
+                    } else {
+                        Toast.makeText(this, "Recording failed (error ${event.error})", Toast.LENGTH_LONG).show()
+                    }
+                }
+                else -> {}
+            }
+        }
+        updateModeButtons()
+    }
+
+    private fun styleVideo(raw: File, look: Look) {
+        val styled = File(cacheDir, "styled_${timestamp()}.mp4")
+        processingOverlay.visibility = View.VISIBLE
+        processingBar.progress = 0
+        processingText.text = "Applying look to video… 0%"
+        VideoStyler.style(this, raw, styled, look,
+            onProgress = { p ->
+                processingBar.progress = p
+                processingText.text = "Applying look to video… $p%"
+            },
+            onDone = { error ->
+                if (error == null) {
+                    try {
+                        val uri = saveVideo(styled)
+                        lastUri = uri
+                        lastMime = "video/mp4"
+                        runCatching {
+                            ThumbnailUtils.createVideoThumbnail(styled, android.util.Size(160, 160), null)
+                        }.getOrNull()?.let { thumb.setImageBitmap(it) }
+                        Toast.makeText(this, "Video saved to Movies/FujiSim", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Could not save video: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    Toast.makeText(this, "Video processing failed: ${error.message}", Toast.LENGTH_LONG).show()
+                }
+                raw.delete()
+                styled.delete()
+                processingOverlay.visibility = View.GONE
+            })
+    }
+
+    private fun saveVideo(file: File): Uri {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "FUJISIM_${timestamp()}.mp4")
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/FujiSim")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val resolver = contentResolver
+        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("Could not create gallery entry")
+        resolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+            ?: throw IllegalStateException("Could not write video")
+        values.clear()
+        values.put(MediaStore.Video.Media.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        return uri
+    }
+
+    private fun openLast() {
         val uri = lastUri
         if (uri == null) {
-            Toast.makeText(this, "Photos are saved to Pictures/FujiSim", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Photos: Pictures/FujiSim · Videos: Movies/FujiSim", Toast.LENGTH_SHORT).show()
             return
         }
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "image/jpeg")
+            setDataAndType(uri, lastMime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         runCatching { startActivity(intent) }
