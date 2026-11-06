@@ -229,6 +229,14 @@ class AppPrefs(ctx: Context) {
         get() = prefs.getBoolean("keepOriginals", true)
         set(v) { prefs.edit().putBoolean("keepOriginals", v).apply() }
 
+    var rawMode: Boolean
+        get() = prefs.getBoolean("rawMode", false)
+        set(v) { prefs.edit().putBoolean("rawMode", v).apply() }
+
+    var saveDng: Boolean
+        get() = prefs.getBoolean("saveDng", false)
+        set(v) { prefs.edit().putBoolean("saveDng", v).apply() }
+
     var gridMode: Int
         get() = prefs.getInt("gridMode", 0)
         set(v) { prefs.edit().putInt("gridMode", v).apply() }

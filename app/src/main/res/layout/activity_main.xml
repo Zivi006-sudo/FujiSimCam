@@ -35,6 +35,9 @@
                 android:paddingStart="10dp" android:paddingEnd="10dp" android:text="LOG" android:textSize="12sp"
                 android:textStyle="bold" android:visibility="gone" />
             <TextView android:id="@+id/nightBtn" style="@style/TopIcon" android:text="☾" android:visibility="gone" />
+            <TextView android:id="@+id/rawBtn" style="@style/TopIcon" android:layout_width="wrap_content"
+                android:paddingStart="8dp" android:paddingEnd="8dp" android:text="RAW" android:textSize="12sp"
+                android:textStyle="bold" android:visibility="gone" />
             <TextView android:id="@+id/moreBtn" style="@style/TopIcon" android:text="⋯" android:textSize="22sp" />
         </LinearLayout>
 

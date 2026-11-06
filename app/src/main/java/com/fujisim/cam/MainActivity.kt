@@ -200,6 +200,9 @@ class MainActivity : AppCompatActivity() {
     private var availableExt: List<Int> = emptyList()
     private var extMode = ExtensionMode.NONE
     private lateinit var nightBtn: TextView
+    private lateinit var rawBtn: TextView
+    private var rawMode = false
+    private var deviceOrientationDeg = 0
 
     // Histogram + highlight warning
     private lateinit var histogramView: HistogramView
@@ -243,6 +246,7 @@ class MainActivity : AppCompatActivity() {
         object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
                 if (orientation == ORIENTATION_UNKNOWN) return
+                deviceOrientationDeg = ((orientation + 45) / 90 * 90) % 360
                 val rotation = when (orientation) {
                     in 45 until 135 -> Surface.ROTATION_270
                     in 135 until 225 -> Surface.ROTATION_180
@@ -378,6 +382,16 @@ class MainActivity : AppCompatActivity() {
         }.start()
 
         nightBtn = findViewById(R.id.nightBtn)
+        rawBtn = findViewById(R.id.rawBtn)
+        rawMode = prefs.rawMode
+        rawBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            rawMode = !rawMode
+            prefs.rawMode = rawMode
+            it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            showInfo(if (rawMode) "RAW on — the app develops the sensor's RAW data itself (shutter takes ~2 s)" else "RAW off")
+            updateModeButtons()
+        }
         histogramView = findViewById(R.id.histogram)
         zebraOn = prefs.zebra
         histOn = prefs.histogram
@@ -663,6 +677,13 @@ class MainActivity : AppCompatActivity() {
         })
         rows += btnRow
 
+        // RAW capture
+        rows += UiKit.section(this, "RAW CAPTURE")
+        rows += UiKit.note(this, "With RAW on, the app captures the sensor's RAW data and develops it itself — more highlight detail and " +
+            "natural colour, without Xiaomi's processing. Best in good light (no multi-frame night merge). Toggle it with the RAW button at the top.")
+        rows += toggleRow("RAW capture", rawMode) { on -> rawMode = on; prefs.rawMode = on; updateModeButtons() }
+        rows += toggleRow("Also save the DNG file (for Lightroom)", prefs.saveDng) { on -> prefs.saveDng = on }
+
         // RAW test
         rows += UiKit.section(this, "RAW TEST")
         rows += UiKit.note(this, "Checks which lenses give apps RAW (needed for the RAW colour pipeline). Send me a screenshot of the report.")
@@ -767,6 +788,96 @@ class MainActivity : AppCompatActivity() {
             .addOnFailureListener { e ->
                 Toast.makeText(this, "Couldn't read text: ${e.message}", Toast.LENGTH_LONG).show()
             }
+    }
+
+    // ------------------------------------------------------------------ RAW
+
+    private fun takeRawPhoto() {
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        if (!providerFuture.isDone) return
+        val provider = providerFuture.get()
+        shutter.isEnabled = false
+        flash.alpha = 0.85f
+        flash.animate().alpha(0f).setDuration(250).start()
+        processingOverlay.visibility = View.VISIBLE
+        processingBar.isIndeterminate = true
+        processingText.text = "Capturing RAW… hold still"
+        val look = lookNow
+        val lut = lutNow
+        val (name, desc) = currentLookLabel()
+        val zoom = zoomRatio
+        val ev = lastRecipeEv + userEv
+        val keepOriginal = prefs.keepOriginals
+        val saveDng = prefs.saveDng
+        provider.unbindAll()
+        camera = null
+        val dng = File(cacheDir, "raw_${timestamp()}.dng")
+        mainHandler.postDelayed({
+            RawCapture(this).capture("0", zoom, ev, deviceOrientationDeg, dng) { res ->
+                runOnUiThread { startCamera() }
+                val file = res.dng
+                if (file == null) {
+                    runOnUiThread {
+                        processingOverlay.visibility = View.GONE
+                        processingBar.isIndeterminate = false
+                        shutter.isEnabled = true
+                        Toast.makeText(this, "RAW capture failed: ${res.error?.message}", Toast.LENGTH_LONG).show()
+                    }
+                    return@capture
+                }
+                runOnUiThread { processingText.text = "Developing RAW…" }
+                cameraExecutor.execute { developRaw(file, res.iso, look, lut, name, desc, keepOriginal, saveDng) }
+            }
+        }, 300)
+    }
+
+    private fun developRaw(dng: File, iso: Int, look: Look, lut: LutImage?, name: String, desc: String,
+                           keepOriginal: Boolean, saveDng: Boolean) {
+        try {
+            val bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(dng)) { d, _, _ ->
+                d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+            val src = if (bmp.config == Bitmap.Config.ARGB_8888) bmp else bmp.copy(Bitmap.Config.ARGB_8888, false)
+            val fileName = "FUJISIM_RAW_${timestamp()}.jpg"
+            if (keepOriginal) runCatching { saveOriginal(src, 0, fileName) }
+            // RAW has no phone noise reduction or sharpening, so the app does more of both.
+            val rawDenoise = when { iso <= 200 -> 0.9f; iso <= 800 -> 1.1f; else -> 1.25f }
+            val tuned = look.copy(denoise = maxOf(look.denoise, rawDenoise), sharp = look.sharp + 0.15f)
+            val scale = (min(src.width, src.height) / 1080f).coerceAtLeast(1f)
+            val out = FilmShader.process(src, tuned, lut, scale, 0)
+            val uri = saveJpeg(out, "$name (RAW): $desc", fileName)
+            if (saveDng) runCatching { saveDngToGallery(dng, fileName.removeSuffix(".jpg") + ".dng") }
+            val small = Bitmap.createScaledBitmap(out, 160, (160f * out.height / out.width).roundToInt(), true)
+            runOnUiThread {
+                processingOverlay.visibility = View.GONE
+                processingBar.isIndeterminate = false
+                shutter.isEnabled = true
+                lastUri = uri; lastMime = "image/jpeg"
+                thumb.setImageBitmap(small)
+            }
+        } catch (e: Throwable) {
+            runOnUiThread {
+                processingOverlay.visibility = View.GONE
+                processingBar.isIndeterminate = false
+                shutter.isEnabled = true
+                Toast.makeText(this, "Couldn't develop RAW: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        } finally {
+            dng.delete()
+        }
+    }
+
+    private fun saveDngToGallery(dng: File, name: String) {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/x-adobe-dng")
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/FujiSim/RAW")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
+        contentResolver.openOutputStream(uri)?.use { o -> dng.inputStream().use { it.copyTo(o) } }
+        values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
+        contentResolver.update(uri, values, null, null)
     }
 
     // ------------------------------------------------------------------ Match Look
@@ -1617,6 +1728,8 @@ class MainActivity : AppCompatActivity() {
             else -> "☾"
         }
         nightBtn.setTextColor(if (extMode != ExtensionMode.NONE) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
+        rawBtn.visibility = if (!videoMode && lensFacing == CameraSelector.LENS_FACING_BACK) View.VISIBLE else View.GONE
+        rawBtn.setTextColor(if (rawMode) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
         familyBtn.text = "${FAMILY_NAMES[family]} ▾"
         logBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
         logBtn.text = when {
@@ -1779,6 +1892,9 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ Photo
 
     private fun takePhoto() {
+        if (rawMode && extMode == ExtensionMode.NONE && lensFacing == CameraSelector.LENS_FACING_BACK) {
+            takeRawPhoto(); return
+        }
         val capture = imageCapture ?: return
         shutter.isEnabled = false
         flash.alpha = 0.85f
