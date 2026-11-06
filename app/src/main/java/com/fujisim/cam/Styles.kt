@@ -75,6 +75,9 @@ data class LensSettings(
     val naturalDetail: Boolean = true,
 )
 
+/** White balance: camera Auto (default) or the recipe's fixed WB, plus a colour-wheel tint. */
+data class WbSettings(val useRecipe: Boolean = false, val wheelX: Float = 0f, val wheelY: Float = 0f)
+
 class AppPrefs(ctx: Context) {
     private val prefs = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
 
@@ -112,6 +115,16 @@ class AppPrefs(ctx: Context) {
             prefs.edit().putFloat("lens_mist", v.mist).putFloat("lens_vignette", v.vignette)
                 .putFloat("lens_halation", v.halation).putFloat("lens_corner", v.cornerSoft)
                 .putBoolean("lens_natural", v.naturalDetail).apply()
+        }
+
+    var wb: WbSettings
+        get() = WbSettings(
+            useRecipe = prefs.getBoolean("wb_recipe", false),
+            wheelX = prefs.getFloat("wb_x", 0f),
+            wheelY = prefs.getFloat("wb_y", 0f),
+        )
+        set(v) {
+            prefs.edit().putBoolean("wb_recipe", v.useRecipe).putFloat("wb_x", v.wheelX).putFloat("wb_y", v.wheelY).apply()
         }
 
     var gridMode: Int

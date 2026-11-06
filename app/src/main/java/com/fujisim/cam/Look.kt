@@ -30,6 +30,7 @@ data class Look(
     val halation: Float = 0f,       // 0..1
     val cornerSoft: Float = 0f,     // 0..1
     val denoise: Float = 0.8f,      // light noise reduction before the look, 0..1
+    val fineGrain: Boolean = true,  // fine film grain (recipes) vs the original softer, bigger grain (Styles)
 ) {
     fun withLens(l: LensSettings) = copy(
         mist = l.mist, vignette = l.vignette, halation = l.halation, cornerSoft = l.cornerSoft,
@@ -69,6 +70,7 @@ data class Look(
         "uHalation" to floatArrayOf(halation),
         "uCornerSoft" to floatArrayOf(cornerSoft),
         "uDenoise" to floatArrayOf(denoise),
+        "uFineGrain" to floatArrayOf(if (fineGrain) 1f else 0f),
     )
 
     companion object {
@@ -132,8 +134,10 @@ data class Look(
                 ),
                 mono = if (b.mono) s.palette.coerceIn(0f, 1f) else 0f,
                 warmth = b.warmth * k,
-                grain = 0f,                 // Styles are always clean: no grain
-                denoise = 1f,               // and full noise reduction
+                grain = s.grain.coerceIn(0f, 1f) * 0.1f,
+                grainSize = 1.4f,
+                fineGrain = false,          // the original grain texture
+                denoise = 0f,
                 sharp = s.detail.coerceIn(-1f, 1f) * 0.9f,
                 clarity = s.detail.coerceIn(-1f, 1f) * 0.35f,
             )

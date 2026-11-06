@@ -23,10 +23,10 @@ object WhiteBalance {
     )
 
     /** available = camera's supported AWB modes, or null if unknown (assume all). */
-    fun plan(r: Recipe, available: IntArray?): Plan {
+    fun plan(r: Recipe, available: IntArray?, useRecipeWb: Boolean = true): Plan {
         var mode = CaptureRequest.CONTROL_AWB_MODE_AUTO
         var gains = floatArrayOf(1f, 1f, 1f)
-        val target: Int? = when (r.wb) {
+        val target: Int? = if (!useRecipeWb) null else when (r.wb) {
             WbMode.AUTO -> null
             WbMode.KELVIN -> r.kelvin
             else -> r.wb.kelvin

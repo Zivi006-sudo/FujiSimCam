@@ -46,6 +46,7 @@ uniform float uVignette;
 uniform float uHalation;
 uniform float uCornerSoft;
 uniform float uDenoise;
+uniform float uFineGrain;
 """
 
     private const val CORE = """
@@ -252,7 +253,13 @@ vec3 grade(vec3 orig, vec2 p) {
     c *= 1.0 - uVignette * 0.45 * smoothstep(0.3, 1.05, edge);
 
     // Film grain (moves over time in video / live view)
-    if (uGrain > 0.0) {
+    if (uGrain > 0.0 && uFineGrain < 0.5) {
+        // Original grain texture (used by Styles)
+        float cellO = uGrainSize * s;
+        vec2 offO = vec2(fract(uTime * 0.371) * 517.0, fract(uTime * 0.613) * 331.0);
+        float gO = vnoise(p / cellO + offO) + vnoise(p / cellO * 1.7 + offO.yx + vec2(13.1, 7.3)) - 1.0;
+        c += vec3(gO * uGrain * (0.35 + 2.6 * Lt * (1.0 - Lt)));
+    } else if (uGrain > 0.0) {
         // Fine, film-like grain: small specks that scale gently with resolution, strongest in mid-tones
         float cell = uGrainSize * sqrt(max(s, 1.0));
         vec2 off = vec2(fract(uTime * 0.371) * 517.0, fract(uTime * 0.613) * 331.0);

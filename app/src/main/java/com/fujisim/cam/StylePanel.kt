@@ -12,7 +12,7 @@ import android.widget.SeekBar
 import android.widget.TextView
 import kotlin.math.roundToInt
 
-/** "More" panel for Styles: Palette, Detail and Reset (Styles are always grain-free). Tone/Colour live on the main screen pad. */
+/** "More" panel for Styles: Palette, Texture (Grain, Detail) and Reset. Tone/Colour live on the main screen pad. */
 class StylePanel(
     private val ctx: Context,
     private val style: PhotoStyle,
@@ -48,6 +48,7 @@ class StylePanel(
         col.addView(header)
 
         col.addView(slider("Palette (style strength)", 0f, 1f, s.palette, true) { update(s.copy(palette = it)) })
+        col.addView(slider("Texture: Grain", 0f, 1f, s.grain, true) { update(s.copy(grain = it)) })
         col.addView(slider("Texture: Detail (smooth ↔ crisp)", -1f, 1f, s.detail, false) { update(s.copy(detail = it)) })
         return scroll
     }

@@ -101,6 +101,12 @@
                     style="@style/TopChip"
                     android:text="Grid" />
 
+                <TextView
+                    android:id="@+id/wbBtn"
+                    style="@style/TopChip"
+                    android:layout_marginStart="8dp"
+                    android:text="WB AUTO" />
+
                 <Space
                     android:layout_width="0dp"
                     android:layout_height="1dp"

@@ -136,6 +136,8 @@ class MainActivity : AppCompatActivity() {
     private var lookNow = Look()
     private var lutNow: LutImage? = null
     private var lens = LensSettings()
+    private var wb = WbSettings()
+    private lateinit var wbBtn: TextView
 
     // Camera
     private var camera: Camera? = null
@@ -270,6 +272,12 @@ class MainActivity : AppCompatActivity() {
         grid.mode = GridOverlay.Mode.values().getOrElse(prefs.gridMode) { GridOverlay.Mode.OFF }
         highRes = prefs.highRes
         lens = prefs.lens
+        wb = prefs.wb
+        wbBtn = findViewById(R.id.wbBtn)
+        wbBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            if (editing) closeEditor() else openWbPanel()
+        }
         // Warm the LUT cache off the main thread so switching recipes is instant.
         Thread {
             FilmSim.values().mapNotNull { it.lut }.forEach { LutLibrary.get(applicationContext, "asset:$it") }
@@ -788,20 +796,24 @@ class MainActivity : AppCompatActivity() {
             applyCameraSettings(CaptureRequest.CONTROL_AWB_MODE_AUTO, 0f)
             recipeInfo.text = "${currentStyle.label} style\n" + styleSummary(styleLive)
         } else {
-            val plan = WhiteBalance.plan(live, awbModes)
+            val plan = WhiteBalance.plan(live, awbModes, wb.useRecipe)
             lookNow = Look.fromRecipe(live, plan.gains)
             applyCameraSettings(plan.awbMode, live.ev)
             val credit = if (live.credit.isNotBlank()) "  ·  by ${live.credit}" else ""
             recipeInfo.text = "${live.name}$credit\n${live.summary()}"
         }
-        lookNow = lookNow.withLens(lens)
+        val tint = WbWheel.gains(wb.wheelX, wb.wheelY)
+        lookNow = lookNow.withLens(lens).let { lk -> lk.copy(wb = FloatArray(3) { lk.wb[it] * tint[it] }) }
+        wbBtn.text = if (wb.useRecipe) "WB REC" else "WB AUTO"
+        wbBtn.setTextColor(if (wb.wheelX != 0f || wb.wheelY != 0f) Color.parseColor("#FFC94A") else Color.WHITE)
         lutNow = LutLibrary.get(this, lookNow.lut)
         pushPreviewShader(SystemClock.elapsedRealtime() / 1000f)
     }
 
     private fun styleSummary(s: StyleSettings): String {
         fun pct(v: Float) = "${if (v > 0) "+" else ""}${(v * 100).roundToInt()}"
-        return "Tone ${pct(s.tone)} · Colour ${pct(s.color)} · Palette ${(s.palette * 100).roundToInt()}% · Detail ${pct(s.detail)}"
+        return "Tone ${pct(s.tone)} · Colour ${pct(s.color)} · Palette ${(s.palette * 100).roundToInt()}% · " +
+            "Grain ${(s.grain * 100).roundToInt()} · Detail ${pct(s.detail)}"
     }
 
     private fun pushPreviewShader(time: Float) {
@@ -900,6 +912,22 @@ class MainActivity : AppCompatActivity() {
         }
         editorContainer.removeAllViews()
         editorContainer.addView(view)
+        editorContainer.visibility = View.VISIBLE
+    }
+
+    private fun openWbPanel() {
+        if (recording != null) return
+        editing = true
+        val panel = WbPanel(this, wb,
+            onChange = {
+                wb = it
+                prefs.wb = it
+                lastCamKey = ""
+                refreshLook()
+            },
+            onClose = { closeEditor() })
+        editorContainer.removeAllViews()
+        editorContainer.addView(panel.view)
         editorContainer.visibility = View.VISIBLE
     }
 
