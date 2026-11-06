@@ -132,8 +132,8 @@ data class Look(
                 ),
                 mono = if (b.mono) s.palette.coerceIn(0f, 1f) else 0f,
                 warmth = b.warmth * k,
-                grain = s.grain.coerceIn(0f, 1f) * 0.05f,
-                grainSize = 1.2f,
+                grain = 0f,                 // Styles are always clean: no grain
+                denoise = 1f,               // and full noise reduction
                 sharp = s.detail.coerceIn(-1f, 1f) * 0.9f,
                 clarity = s.detail.coerceIn(-1f, 1f) * 0.35f,
             )

@@ -801,8 +801,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun styleSummary(s: StyleSettings): String {
         fun pct(v: Float) = "${if (v > 0) "+" else ""}${(v * 100).roundToInt()}"
-        return "Tone ${pct(s.tone)} · Colour ${pct(s.color)} · Palette ${(s.palette * 100).roundToInt()}% · " +
-            "Grain ${(s.grain * 100).roundToInt()} · Detail ${pct(s.detail)}"
+        return "Tone ${pct(s.tone)} · Colour ${pct(s.color)} · Palette ${(s.palette * 100).roundToInt()}% · Detail ${pct(s.detail)}"
     }
 
     private fun pushPreviewShader(time: Float) {
