@@ -26,6 +26,7 @@ class EditorPanel(
     private val onSave: (Recipe, Boolean) -> Unit,
     private val onDelete: (Recipe) -> Unit,
     private val onClose: () -> Unit,
+    private val onImportLut: () -> Unit = {},
 ) {
     var recipe: Recipe = initial
         private set
@@ -56,6 +57,19 @@ class EditorPanel(
         actions.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
         actions.addView(button("Close", "#333333", Color.WHITE) { onClose() })
         col.addView(actions)
+
+        val lutRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        lutRow.addView(TextView(ctx).apply {
+            text = if (recipe.lut != null) "Using an imported LUT (replaces the film simulation colours)"
+            else "Have a .cube LUT? Import it as a new recipe."
+            setTextColor(Color.parseColor("#AAAAAA"))
+            textSize = 12f
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        lutRow.addView(button("Import LUT…", "#2E4A6B", Color.WHITE) { onImportLut() })
+        col.addView(lutRow)
 
         if (recipe.credit.isNotBlank()) {
             col.addView(TextView(ctx).apply {

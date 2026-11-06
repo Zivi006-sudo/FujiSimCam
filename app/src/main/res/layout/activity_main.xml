@@ -111,6 +111,12 @@
                     style="@style/TopChip"
                     android:text="FUJI" />
 
+                <TextView
+                    android:id="@+id/lensBtn"
+                    style="@style/TopChip"
+                    android:layout_marginStart="8dp"
+                    android:text="LENS" />
+
                 <Space
                     android:layout_width="0dp"
                     android:layout_height="1dp"

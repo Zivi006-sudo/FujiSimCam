@@ -38,6 +38,13 @@ uniform float uSharp;
 uniform float uClarity;
 uniform float uWarmth;
 uniform float uGlow;
+uniform float uLutN;
+uniform float uLutMix;
+uniform vec2 uLutSize;
+uniform float uMist;
+uniform float uVignette;
+uniform float uHalation;
+uniform float uCornerSoft;
 """
 
     private const val CORE = """
@@ -96,6 +103,18 @@ vec3 brightPass(vec3 v) {
     return max(v - vec3(0.62), vec3(0.0)) / 0.38;
 }
 
+vec3 applyLut(vec3 c) {
+    float n = uLutN;
+    vec3 s3 = clamp(c, 0.0, 1.0) * (n - 1.0);
+    float b0 = floor(s3.b);
+    float b1 = min(b0 + 1.0, n - 1.0);
+    float fb = s3.b - b0;
+    vec2 xy = vec2(s3.r + 0.5, s3.g + 0.5);
+    vec3 c0 = lutFetch(vec2(xy.x + b0 * n, xy.y));
+    vec3 c1 = lutFetch(vec2(xy.x + b1 * n, xy.y));
+    return mix(c0, c1, fb);
+}
+
 vec3 grade(vec3 orig, vec2 p) {
     vec3 c = orig;
     float s = uScale;
@@ -121,24 +140,46 @@ vec3 grade(vec3 orig, vec2 p) {
         c += uClarity * 0.6 * detail * (4.0 * L0 * (1.0 - L0));
     }
 
-    // Glow / halation around bright light
+    // Distance from centre (0 centre .. 1 corners) for lens effects
+    vec2 rel = (p - 0.5 * uSize) / (0.5 * length(uSize));
+    float edge = length(rel) * 1.414;
+
+    // Corner softness (lens character)
+    if (uCornerSoft > 0.0) {
+        float o2 = 2.5 * s;
+        vec3 soft = (src(p + vec2(o2, 0.0)) + src(p - vec2(o2, 0.0)) +
+                     src(p + vec2(0.0, o2)) + src(p - vec2(0.0, o2))) * 0.25;
+        c = mix(c, soft, uCornerSoft * smoothstep(0.45, 1.0, edge));
+    }
+
+    // Wide gather for glow (light halos), mist (Pro-Mist diffusion) and halation
     vec3 bloom = vec3(0.0);
-    if (uGlow > 0.0) {
-        float g1 = 6.0 * s;
-        float g2 = 18.0 * s;
+    vec3 wide = vec3(0.0);
+    if (uGlow > 0.0 || uMist > 0.0 || uHalation > 0.0) {
+        float g1 = 7.0 * s;
+        float g2 = 22.0 * s;
         float g3 = g2 * 0.7071;
-        bloom = (brightPass(src(p + vec2(g1, 0.0))) + brightPass(src(p - vec2(g1, 0.0))) +
-                 brightPass(src(p + vec2(0.0, g1))) + brightPass(src(p - vec2(0.0, g1))) +
-                 brightPass(src(p + vec2(g2, 0.0))) + brightPass(src(p - vec2(g2, 0.0))) +
-                 brightPass(src(p + vec2(0.0, g2))) + brightPass(src(p - vec2(0.0, g2))) +
-                 brightPass(src(p + vec2(g3, g3))) + brightPass(src(p - vec2(g3, g3))) +
-                 brightPass(src(p + vec2(g3, -g3))) + brightPass(src(p - vec2(g3, -g3)))) / 12.0;
+        vec3 t0 = src(p + vec2(g1, 0.0)); vec3 t1 = src(p - vec2(g1, 0.0));
+        vec3 t2 = src(p + vec2(0.0, g1)); vec3 t3 = src(p - vec2(0.0, g1));
+        vec3 t4 = src(p + vec2(g2, 0.0)); vec3 t5 = src(p - vec2(g2, 0.0));
+        vec3 t6 = src(p + vec2(0.0, g2)); vec3 t7 = src(p - vec2(0.0, g2));
+        vec3 t8 = src(p + vec2(g3, g3)); vec3 t9 = src(p - vec2(g3, g3));
+        vec3 t10 = src(p + vec2(g3, -g3)); vec3 t11 = src(p - vec2(g3, -g3));
+        wide = (t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11) / 12.0;
+        bloom = (brightPass(t0) + brightPass(t1) + brightPass(t2) + brightPass(t3) +
+                 brightPass(t4) + brightPass(t5) + brightPass(t6) + brightPass(t7) +
+                 brightPass(t8) + brightPass(t9) + brightPass(t10) + brightPass(t11)) / 12.0;
     }
 
     c = max(c, vec3(0.0));
 
     // White balance (approx. linear light)
     c = pow(pow(c, vec3(2.2)) * uWb, vec3(1.0 / 2.2));
+
+    // Film simulation 3D LUT
+    if (uLutMix > 0.0) {
+        c = mix(c, applyLut(c), uLutMix);
+    }
 
     // Film simulation colour response per hue band
     vec3 hsv = rgb2hsv(clamp(c, 0.0, 1.0));
@@ -175,6 +216,21 @@ vec3 grade(vec3 orig, vec2 p) {
     // Glow, tinted warm like film halation
     c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55);
 
+    // Halation: red-orange fringe around bright edges
+    float bpHere = dot(brightPass(orig), LUMA);
+    c += uHalation * 0.9 * max(dot(bloom, LUMA) - bpHere, 0.0) * vec3(1.0, 0.32, 0.12);
+
+    // Soft glow (Pro-Mist): screen a soft, highlight-weighted copy over the image
+    if (uMist > 0.0) {
+        float mw = smoothstep(0.3, 0.9, dot(wide, LUMA));
+        vec3 m3 = wide * mw * uMist * 0.6;
+        c = vec3(1.0) - (vec3(1.0) - c) * (vec3(1.0) - m3);
+        c = mix(c, c * 0.94 + 0.03, uMist * 0.35);
+    }
+
+    // Vignette
+    c *= 1.0 - uVignette * 0.45 * smoothstep(0.3, 1.05, edge);
+
     // Film grain (moves over time in video / live view)
     if (uGrain > 0.0) {
         float cell = uGrainSize * s;
@@ -190,7 +246,11 @@ vec3 grade(vec3 orig, vec2 p) {
 
     const val AGSL = """
 uniform shader content;
+uniform shader lut;
 """ + UNIFORMS + """
+vec3 lutFetch(vec2 px) {
+    return vec3(lut.eval(px).rgb);
+}
 vec3 src(vec2 p) {
     vec2 q = clamp(p, vec2(0.5), uSize - vec2(0.5));
     vec4 c = vec4(content.eval(q));
@@ -218,8 +278,12 @@ void main() {
     const val FRAGMENT_GL = """
 precision highp float;
 uniform sampler2D uTexSampler;
+uniform sampler2D uLut;
 varying vec2 vTexSamplingCoord;
 """ + UNIFORMS + """
+vec3 lutFetch(vec2 px) {
+    return texture2D(uLut, px / uLutSize).rgb;
+}
 vec3 src(vec2 p) {
     vec2 q = clamp(p, vec2(0.5), uSize - vec2(0.5));
     return texture2D(uTexSampler, q / uSize).rgb;

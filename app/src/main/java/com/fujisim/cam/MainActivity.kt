@@ -25,6 +25,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Size
 import android.view.Choreographer
 import android.view.GestureDetector
@@ -133,6 +134,8 @@ class MainActivity : AppCompatActivity() {
     private var editing = false
     private var showOriginal = false
     private var lookNow = Look()
+    private var lutNow: LutImage? = null
+    private var lens = LensSettings()
 
     // Camera
     private var camera: Camera? = null
@@ -148,6 +151,7 @@ class MainActivity : AppCompatActivity() {
     private var aeLocked = false
     private var highRes = false
     private var maxPhotoMp = 0
+    private var edgeOffSupported = false
     private var lastUri: Uri? = null
     private var lastMime = "image/jpeg"
     private val previewShader = FilmShader()
@@ -158,6 +162,10 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startCamera()
             else Toast.makeText(this, "Camera permission is needed", Toast.LENGTH_LONG).show()
+        }
+    private val importLut =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) importLutFrom(uri)
         }
     private val audioPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -261,6 +269,11 @@ class MainActivity : AppCompatActivity() {
         styleLive = prefs.styleSettings(currentStyle)
         grid.mode = GridOverlay.Mode.values().getOrElse(prefs.gridMode) { GridOverlay.Mode.OFF }
         highRes = prefs.highRes
+        lens = prefs.lens
+        // Warm the LUT cache off the main thread so switching recipes is instant.
+        Thread {
+            FilmSim.values().mapNotNull { it.lut }.forEach { LutLibrary.get(applicationContext, "asset:$it") }
+        }.start()
         setupStyleControls()
 
         rebuildChips()
@@ -304,6 +317,10 @@ class MainActivity : AppCompatActivity() {
             highRes = !highRes
             prefs.highRes = highRes
             startCamera()
+        }
+        findViewById<View>(R.id.lensBtn).setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            if (editing) closeEditor() else openLensPanel()
         }
         logBtn.setOnClickListener {
             if (recording != null) return@setOnClickListener
@@ -465,6 +482,7 @@ class MainActivity : AppCompatActivity() {
             }
             awbModes = readAwbModes()
             maxPhotoMp = readMaxMegapixels()
+            edgeOffSupported = readEdgeOffSupported()
             lastCamKey = ""
             setupZoom()
             updateModeButtons()
@@ -495,6 +513,16 @@ class MainActivity : AppCompatActivity() {
         }.getOrDefault(0)
     }
 
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun readEdgeOffSupported(): Boolean {
+        val cam = camera ?: return false
+        return runCatching {
+            Camera2CameraInfo.from(cam.cameraInfo)
+                .getCameraCharacteristic(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)
+                ?.contains(CaptureRequest.EDGE_MODE_OFF) == true
+        }.getOrDefault(false)
+    }
+
     private var lastRecipeEv = 0f
     private var lastAwbMode = CaptureRequest.CONTROL_AWB_MODE_AUTO
 
@@ -504,7 +532,7 @@ class MainActivity : AppCompatActivity() {
         lastAwbMode = awbMode
         val cam = camera ?: return
         val total = ev + userEv
-        val key = "$awbMode|$total|$aeLocked"
+        val key = "$awbMode|$total|$aeLocked|${lens.naturalDetail}"
         if (key == lastCamKey) return
         lastCamKey = key
         val exposure = cam.cameraInfo.exposureState
@@ -516,12 +544,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         runCatching {
-            Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(
-                CaptureRequestOptions.Builder()
-                    .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode)
-                    .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
-                    .build()
-            )
+            val opts = CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
+            if (lens.naturalDetail && edgeOffSupported) {
+                // Skip the phone's edge sharpening for a natural, camera-like look.
+                opts.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+            }
+            Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(opts.build())
         }
     }
 
@@ -764,6 +794,8 @@ class MainActivity : AppCompatActivity() {
             val credit = if (live.credit.isNotBlank()) "  ·  by ${live.credit}" else ""
             recipeInfo.text = "${live.name}$credit\n${live.summary()}"
         }
+        lookNow = lookNow.withLens(lens)
+        lutNow = LutLibrary.get(this, lookNow.lut)
         pushPreviewShader(SystemClock.elapsedRealtime() / 1000f)
     }
 
@@ -776,7 +808,7 @@ class MainActivity : AppCompatActivity() {
     private fun pushPreviewShader(time: Float) {
         val w = previewView.width.toFloat().coerceAtLeast(1f)
         val h = previewView.height.toFloat().coerceAtLeast(1f)
-        previewShader.set(lookNow, w, h, 1f, time, if (showOriginal) 0f else 1f)
+        previewShader.set(lookNow, lutNow, w, h, 1f, time, if (showOriginal) 0f else 1f)
         previewView.setRenderEffect(previewShader.renderEffect())
     }
 
@@ -864,11 +896,44 @@ class MainActivity : AppCompatActivity() {
                 onChange = { live = it; refreshLook() },
                 onSave = { r, asNew -> saveRecipe(r, asNew) },
                 onDelete = { deleteRecipe(it) },
-                onClose = { closeEditor() }).view
+                onClose = { closeEditor() },
+                onImportLut = { importLut.launch(arrayOf("*/*")) }).view
         }
         editorContainer.removeAllViews()
         editorContainer.addView(view)
         editorContainer.visibility = View.VISIBLE
+    }
+
+    private fun openLensPanel() {
+        if (recording != null) return
+        editing = true
+        val panel = LensPanel(this, lens,
+            onChange = {
+                lens = it
+                prefs.lens = it
+                lastCamKey = ""
+                refreshLook()
+            },
+            onClose = { closeEditor() })
+        editorContainer.removeAllViews()
+        editorContainer.addView(panel.view)
+        editorContainer.visibility = View.VISIBLE
+    }
+
+    private fun importLutFrom(uri: Uri) {
+        try {
+            val ref = LutLibrary.import(this, uri)
+            var name = "Imported LUT"
+            runCatching {
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) name = c.getString(0).substringBeforeLast('.')
+                }
+            }
+            val r = Recipe(name = name, film = FilmSim.NONE, lut = ref, credit = "Imported LUT")
+            saveRecipe(r, true)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Couldn't import LUT: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun closeEditor() {
@@ -935,6 +1000,7 @@ class MainActivity : AppCompatActivity() {
         flash.animate().alpha(0f).setDuration(250).start()
 
         val look = lookNow
+        val lut = lutNow
         val name = if (stylesMode) "${currentStyle.label} style" else live.name
         val desc = if (stylesMode) styleSummary(styleLive) else live.summary()
         val previewWidth = previewView.width.coerceAtLeast(1)
@@ -946,7 +1012,7 @@ class MainActivity : AppCompatActivity() {
                     val raw = try { image.toBitmap() } finally { image.close() }
                     val src = limitSize(raw, 8192)
                     val scale = (min(src.width, src.height).toFloat() / previewWidth).coerceAtLeast(1f)
-                    val out = FilmShader.process(src, look, scale, rotation)
+                    val out = FilmShader.process(src, look, lut, scale, rotation)
                     src.recycle()
                     val uri = saveJpeg(out, "$name: $desc")
                     val small = Bitmap.createScaledBitmap(out, 160, (160f * out.height / out.width).roundToInt(), true)
@@ -1026,6 +1092,7 @@ class MainActivity : AppCompatActivity() {
         val vc = videoCapture ?: return
         val raw = File(cacheDir, "raw_${timestamp()}.mp4")
         val look = lookNow
+        val lut = lutNow
         var pending = vc.output.prepareRecording(this, FileOutputOptions.Builder(raw).build())
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             pending = pending.withAudioEnabled()
@@ -1042,7 +1109,7 @@ class MainActivity : AppCompatActivity() {
                     recording = null
                     updateModeButtons()
                     if (raw.exists() && raw.length() > 0) {
-                        styleVideo(raw, look)
+                        styleVideo(raw, look, lut)
                     } else {
                         Toast.makeText(this, "Recording failed (error ${event.error})", Toast.LENGTH_LONG).show()
                     }
@@ -1053,12 +1120,12 @@ class MainActivity : AppCompatActivity() {
         updateModeButtons()
     }
 
-    private fun styleVideo(raw: File, look: Look) {
+    private fun styleVideo(raw: File, look: Look, lut: LutImage?) {
         val styled = File(cacheDir, "styled_${timestamp()}.mp4")
         processingOverlay.visibility = View.VISIBLE
         processingBar.progress = 0
         processingText.text = "Applying look to video… 0%"
-        VideoStyler.style(this, raw, styled, look,
+        VideoStyler.style(this, raw, styled, look, lut,
             onProgress = { p ->
                 processingBar.progress = p
                 processingText.text = "Applying look to video… $p%"

@@ -2,7 +2,9 @@ package com.fujisim.cam
 
 import android.content.Context
 import android.net.Uri
+import android.graphics.Bitmap
 import android.opengl.GLES20
+import android.opengl.GLUtils
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
@@ -29,7 +31,7 @@ import kotlin.math.min
 
 /** GLSL backend of the colour engine, run on every video frame by Media3. */
 @OptIn(UnstableApi::class)
-class FilmGlProgram(private val look: Look, useHdr: Boolean) : BaseGlShaderProgram(useHdr, 1) {
+class FilmGlProgram(private val look: Look, private val lutImage: LutImage?, useHdr: Boolean) : BaseGlShaderProgram(useHdr, 1) {
     private val program: GlProgram = try {
         GlProgram(Shaders.VERTEX_GL, Shaders.FRAGMENT_GL)
     } catch (e: GlUtil.GlException) {
@@ -37,6 +39,20 @@ class FilmGlProgram(private val look: Look, useHdr: Boolean) : BaseGlShaderProgr
     }
     private var width = 1f
     private var height = 1f
+    private val lut: LutImage = lutImage ?: LutLibrary.identity
+    private val lutTex: Int = uploadTexture(lut.bitmap)
+
+    private fun uploadTexture(bmp: Bitmap): Int {
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+        return ids[0]
+    }
 
     init {
         program.setBufferAttribute(
@@ -56,10 +72,14 @@ class FilmGlProgram(private val look: Look, useHdr: Boolean) : BaseGlShaderProgr
         try {
             program.use()
             program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+            try { program.setSamplerTexIdUniform("uLut", lutTex, 1) } catch (e: RuntimeException) { }
+            set("uLutN", floatArrayOf(lut.size.toFloat()))
+            set("uLutSize", floatArrayOf(lut.bitmap.width.toFloat(), lut.bitmap.height.toFloat()))
             set("uSize", floatArrayOf(width, height))
             set("uScale", floatArrayOf(max(1f, min(width, height) / 1080f)))
             set("uTime", floatArrayOf(presentationTimeUs / 1_000_000f))
             for ((name, v) in look.uniforms(1f)) set(name, v)
+            if (lutImage == null) set("uLutMix", floatArrayOf(0f))
             program.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         } catch (e: GlUtil.GlException) {
@@ -77,6 +97,7 @@ class FilmGlProgram(private val look: Look, useHdr: Boolean) : BaseGlShaderProgr
 
     override fun release() {
         super.release()
+        GLES20.glDeleteTextures(1, intArrayOf(lutTex), 0)
         try {
             program.delete()
         } catch (e: GlUtil.GlException) {
@@ -93,10 +114,11 @@ object VideoStyler {
         input: File,
         output: File,
         look: Look,
+        lutImage: LutImage?,
         onProgress: (Int) -> Unit,
         onDone: (Throwable?) -> Unit,
     ) {
-        val effect = GlEffect { _, useHdr -> FilmGlProgram(look, useHdr) }
+        val effect = GlEffect { _, useHdr -> FilmGlProgram(look, lutImage, useHdr) }
         val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(input)))
             .setEffects(Effects(emptyList(), listOf(effect)))
             .build()

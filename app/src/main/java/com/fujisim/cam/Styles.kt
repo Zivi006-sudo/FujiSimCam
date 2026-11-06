@@ -66,6 +66,15 @@ data class StyleSettings(
     }
 }
 
+/** Global lens character, applied on top of any recipe or style. */
+data class LensSettings(
+    val mist: Float = 0f,
+    val vignette: Float = 0f,
+    val halation: Float = 0f,
+    val cornerSoft: Float = 0f,
+    val naturalDetail: Boolean = true,
+)
+
 class AppPrefs(ctx: Context) {
     private val prefs = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
 
@@ -90,6 +99,20 @@ class AppPrefs(ctx: Context) {
     var highRes: Boolean
         get() = prefs.getBoolean("highRes", false)
         set(v) { prefs.edit().putBoolean("highRes", v).apply() }
+
+    var lens: LensSettings
+        get() = LensSettings(
+            mist = prefs.getFloat("lens_mist", 0f),
+            vignette = prefs.getFloat("lens_vignette", 0f),
+            halation = prefs.getFloat("lens_halation", 0f),
+            cornerSoft = prefs.getFloat("lens_corner", 0f),
+            naturalDetail = prefs.getBoolean("lens_natural", true),
+        )
+        set(v) {
+            prefs.edit().putFloat("lens_mist", v.mist).putFloat("lens_vignette", v.vignette)
+                .putFloat("lens_halation", v.halation).putFloat("lens_corner", v.cornerSoft)
+                .putBoolean("lens_natural", v.naturalDetail).apply()
+        }
 
     var gridMode: Int
         get() = prefs.getInt("gridMode", 0)

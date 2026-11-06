@@ -1,7 +1,7 @@
 package com.fujisim.cam
 
 /** Everything the colour engine needs for one frame. Built from a Fuji recipe or an iPhone-style Style. */
-class Look(
+data class Look(
     val wb: FloatArray = floatArrayOf(1f, 1f, 1f),
     val sat: Float = 1f,
     val contrast: Float = 0f,
@@ -24,7 +24,16 @@ class Look(
     val clarity: Float = 0f,
     val warmth: Float = 0f,
     val glow: Float = 0f,
+    val lut: String? = null,        // film-simulation LUT reference
+    val mist: Float = 0f,           // Pro-Mist soft glow 0..1
+    val vignette: Float = 0f,       // 0..1
+    val halation: Float = 0f,       // 0..1
+    val cornerSoft: Float = 0f,     // 0..1
 ) {
+    fun withLens(l: LensSettings) = copy(
+        mist = l.mist, vignette = l.vignette, halation = l.halation, cornerSoft = l.cornerSoft,
+    )
+
     /** Uniform name -> value (1–3 floats). Size/scale/time are set by the renderer. */
     fun uniforms(mix: Float): List<Pair<String, FloatArray>> = listOf(
         "uMix" to floatArrayOf(mix),
@@ -53,6 +62,11 @@ class Look(
         "uClarity" to floatArrayOf(clarity),
         "uWarmth" to floatArrayOf(warmth),
         "uGlow" to floatArrayOf(glow),
+        "uLutMix" to floatArrayOf(if (lut != null) 1f else 0f),
+        "uMist" to floatArrayOf(mist),
+        "uVignette" to floatArrayOf(vignette),
+        "uHalation" to floatArrayOf(halation),
+        "uCornerSoft" to floatArrayOf(cornerSoft),
     )
 
     companion object {
@@ -61,7 +75,7 @@ class Look(
             val drComp = when (r.dr) { 200 -> 0.75f; 400 -> 1.5f; else -> 0f }
             return Look(
                 wb = wbGains,
-                sat = p.sat * (1f + 0.08f * r.color),
+                sat = p.sat * (1f + 0.06f * r.color),
                 contrast = p.contrast,
                 lift = p.lift,
                 highlight = r.highlight - drComp,
@@ -82,6 +96,7 @@ class Look(
                 clarity = r.clarity / 5f,
                 warmth = r.warmth / 10f,
                 glow = r.glow / 10f,
+                lut = r.lut ?: r.film.lut?.let { "asset:$it" },
             )
         }
 
