@@ -738,11 +738,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 val r = parsed.recipe
                 val msg = StringBuilder()
-                msg.append(r.summary()).append("
-
-")
-                msg.append("Found: ").append(parsed.found.joinToString(", ")).append('
-')
+                msg.append(r.summary()).append("\n\n")
+                msg.append("Found: ").append(parsed.found.joinToString(", ")).append('\n')
                 if (parsed.missing.isNotEmpty()) msg.append("Not found (set to default): ").append(parsed.missing.joinToString(", "))
                 val nameInput = android.widget.EditText(this).apply { setText(r.name); setSingleLine(true) }
                 val box = LinearLayout(this).apply {
