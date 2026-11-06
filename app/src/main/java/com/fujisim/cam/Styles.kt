@@ -215,6 +215,18 @@ class AppPrefs(ctx: Context) {
         get() = prefs.getString("lensCalibRef", null)
         set(v) { prefs.edit().putString("lensCalibRef", v).apply() }
 
+    var zebra: Boolean
+        get() = prefs.getBoolean("zebra", false)
+        set(v) { prefs.edit().putBoolean("zebra", v).apply() }
+
+    var histogram: Boolean
+        get() = prefs.getBoolean("histogram", false)
+        set(v) { prefs.edit().putBoolean("histogram", v).apply() }
+
+    var keepOriginals: Boolean
+        get() = prefs.getBoolean("keepOriginals", true)
+        set(v) { prefs.edit().putBoolean("keepOriginals", v).apply() }
+
     var gridMode: Int
         get() = prefs.getInt("gridMode", 0)
         set(v) { prefs.edit().putInt("gridMode", v).apply() }

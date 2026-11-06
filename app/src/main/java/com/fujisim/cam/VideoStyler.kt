@@ -101,6 +101,7 @@ class FilmGlProgram(
             set("uTime", floatArrayOf(presentationTimeUs / 1_000_000f))
             for ((name, v) in look.uniforms(1f)) set(name, v)
             if (lutImage == null) set("uLutMix", floatArrayOf(0f))
+            set("uZebra", floatArrayOf(0f))
             val useTemporal = temporal > 0f && havePrev && temporalOk
             if (prevTex != 0) {
                 try { program.setSamplerTexIdUniform("uPrev", prevTex, 2) } catch (e: RuntimeException) { }

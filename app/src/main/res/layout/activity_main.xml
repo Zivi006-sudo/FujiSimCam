@@ -60,6 +60,15 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
 
+            <com.fujisim.cam.HistogramView
+                android:id="@+id/histogram"
+                android:layout_width="112dp"
+                android:layout_height="56dp"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="10dp"
+                android:layout_marginTop="10dp"
+                android:visibility="gone" />
+
             <View
                 android:id="@+id/flash"
                 android:layout_width="match_parent"

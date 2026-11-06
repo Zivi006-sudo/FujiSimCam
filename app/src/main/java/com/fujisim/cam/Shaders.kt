@@ -52,6 +52,7 @@ uniform vec3 uTintS;
 uniform vec3 uTintM;
 uniform vec3 uTintH;
 uniform vec3 uLumSMH;
+uniform float uZebra;
 """
 
     private const val CORE = """
@@ -291,7 +292,14 @@ vec3 grade(vec3 orig, vec2 p) {
     }
 
     c = clamp(c, 0.0, 1.0);
-    return mix(orig, c, uMix);
+    c = mix(orig, c, uMix);
+
+    // Highlight warning (viewfinder only): diagonal stripes where highlights are clipping
+    if (uZebra > 0.0 && dot(c, LUMA) > 0.965) {
+        float stripe = step(0.5, fract((p.x + p.y) / (9.0 * max(uScale, 1.0))));
+        c = mix(c, vec3(stripe), 0.55);
+    }
+    return c;
 }
 """
 

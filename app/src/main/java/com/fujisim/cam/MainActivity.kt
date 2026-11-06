@@ -68,6 +68,11 @@ import androidx.camera.core.Preview
 import androidx.camera.core.UseCase
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.extensions.ExtensionMode
+import androidx.activity.result.PickVisualMediaRequest
+import android.graphics.ImageDecoder
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import androidx.camera.extensions.ExtensionsManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -196,6 +201,19 @@ class MainActivity : AppCompatActivity() {
     private var extMode = ExtensionMode.NONE
     private lateinit var nightBtn: TextView
 
+    // Histogram + highlight warning
+    private lateinit var histogramView: HistogramView
+    private var zebraOn = false
+    private var histOn = false
+    private val histExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    @Volatile private var histBusy = false
+    private val histTicker = object : Runnable {
+        override fun run() {
+            updateHistogram()
+            mainHandler.postDelayed(this, 450)
+        }
+    }
+
     // Lens colour matching
     @Volatile private var activePhysicalId: String? = null
     private var lensNames: Map<String, String> = emptyMap()
@@ -210,6 +228,10 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) importLutFrom(uri)
         }
+    private val pickScreenshot =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) readRecipeScreenshot(uri) }
+    private val pickPhotoToEdit =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) reEditPhoto(uri) }
     private val audioPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (!granted) Toast.makeText(this, "Videos will be recorded without sound", Toast.LENGTH_SHORT).show()
@@ -354,6 +376,11 @@ class MainActivity : AppCompatActivity() {
         }.start()
 
         nightBtn = findViewById(R.id.nightBtn)
+        histogramView = findViewById(R.id.histogram)
+        zebraOn = prefs.zebra
+        histOn = prefs.histogram
+        histogramView.visibility = if (histOn) View.VISIBLE else View.GONE
+        thumb.setOnLongClickListener { pickImage(pickPhotoToEdit); true }
         Thread {
             val names = CameraReport.lenses(applicationContext).associate { it.id to it.label }
             runOnUiThread { lensNames = names; recomputeLensCorrection() }
@@ -412,6 +439,7 @@ class MainActivity : AppCompatActivity() {
         updateLevelSensor()
         Choreographer.getInstance().postFrameCallback(grainTicker)
         mainHandler.postDelayed(thumbTicker, 1500)
+        mainHandler.postDelayed(histTicker, 800)
     }
 
     override fun onPause() {
@@ -419,6 +447,7 @@ class MainActivity : AppCompatActivity() {
         sensorManager.unregisterListener(gravityListener)
         Choreographer.getInstance().removeFrameCallback(grainTicker)
         mainHandler.removeCallbacks(thumbTicker)
+        mainHandler.removeCallbacks(histTicker)
         if (recording != null) toggleRecording()
     }
 
@@ -431,6 +460,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         cameraExecutor.shutdown()
         thumbExecutor.shutdown()
+        histExecutor.shutdown()
     }
 
     private fun updateLevelSensor() {
@@ -584,6 +614,32 @@ class MainActivity : AppCompatActivity() {
     /** Extra rows for the Settings sheet (filled in by later features). */
     private fun settingsExtraRows(): List<View> {
         val rows = mutableListOf<View>()
+        // Display aids
+        rows += UiKit.section(this, "VIEWFINDER")
+        rows += toggleRow("Highlight warning (zebra stripes)", zebraOn) { on ->
+            zebraOn = on; prefs.zebra = on; pushPreviewShader(0f)
+        }
+        rows += toggleRow("Live histogram", histOn) { on ->
+            histOn = on; prefs.histogram = on
+            histogramView.visibility = if (on) View.VISIBLE else View.GONE
+        }
+
+        // Editing
+        rows += UiKit.section(this, "RE-EDIT PHOTOS")
+        rows += UiKit.note(this, "Apply the current look (recipe, style or Normal) to any photo in your gallery. " +
+            "Tip: long-press the thumbnail next to the shutter. Photos taken in this app keep a clean original, so re-editing them starts from the untouched image.")
+        rows += toggleRow("Keep clean originals for re-editing", prefs.keepOriginals) { on -> prefs.keepOriginals = on }
+        val origDir = File(filesDir, "originals")
+        val usedMb = (origDir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
+        rows += LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            addView(UiKit.pill(this@MainActivity, "Edit a gallery photo", "#2E4A6B") { closeEditor(); pickImage(pickPhotoToEdit) })
+            addView(UiKit.pill(this@MainActivity, "Delete originals (${usedMb}MB)", "#333333") {
+                origDir.listFiles()?.forEach { it.delete() }
+                Toast.makeText(this@MainActivity, "Stored originals deleted", Toast.LENGTH_SHORT).show()
+            })
+        }
+
         // Night / HDR / Bokeh
         rows += UiKit.section(this, "NIGHT · HDR · BOKEH (XIAOMI)")
         rows += UiKit.note(this, if (availableExt.isEmpty())
@@ -613,6 +669,156 @@ class MainActivity : AppCompatActivity() {
             addView(UiKit.pill(this@MainActivity, "Run camera report", "#2E4A6B") { showCameraReport() })
         }
         return rows
+    }
+
+    private fun toggleRow(label: String, on: Boolean, onToggle: (Boolean) -> Unit): View {
+        @Suppress("UseSwitchCompatOrMaterialCode")
+        val sw = android.widget.Switch(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            isChecked = on
+            setPadding(0, dp(6), 0, dp(6))
+            setOnCheckedChangeListener { _, v -> onToggle(v) }
+        }
+        return sw
+    }
+
+    private fun pickImage(launcher: androidx.activity.result.ActivityResultLauncher<PickVisualMediaRequest>) {
+        launcher.launch(PickVisualMediaRequest.Builder()
+            .setMediaType(ActivityResultContracts.PickVisualMedia.ImageOnly).build())
+    }
+
+    // ------------------------------------------------------------------ Histogram
+
+    private fun updateHistogram() {
+        if (!histOn || histBusy || recording != null) return
+        val frame = runCatching { previewView.bitmap }.getOrNull() ?: return
+        val imgH = (frame.width / grid.imageAspect).roundToInt().coerceAtMost(frame.height).coerceAtLeast(1)
+        val small = Bitmap.createScaledBitmap(Bitmap.createBitmap(frame, 0, 0, frame.width, imgH), 96,
+            (96f * imgH / frame.width).roundToInt().coerceAtLeast(1), false)
+        val look = lookNow
+        val lut = lutNow
+        histBusy = true
+        histExecutor.execute {
+            runCatching { histogramView.update(FilmShader.process(small, look, lut, 0.1f)) }
+            histBusy = false
+        }
+    }
+
+    // ------------------------------------------------------------------ Add recipe: screenshot / LUT
+
+    private fun showAddRecipeMenu() {
+        AlertDialog.Builder(this)
+            .setTitle("Add a recipe")
+            .setItems(arrayOf("From a screenshot of a recipe card", "Import a LUT (.cube)", "Copy the current recipe")) { _, which ->
+                when (which) {
+                    0 -> pickImage(pickScreenshot)
+                    1 -> importLut.launch(arrayOf("*/*"))
+                    else -> { saveRecipe(current.copy(name = current.name + " copy", credit = ""), true); openEditor() }
+                }
+            }
+            .show()
+    }
+
+    private fun readRecipeScreenshot(uri: Uri) {
+        showInfo("Reading recipe…")
+        val image = runCatching { InputImage.fromFilePath(this, uri) }.getOrElse {
+            Toast.makeText(this, "Couldn't open that image", Toast.LENGTH_LONG).show(); return
+        }
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).process(image)
+            .addOnSuccessListener { result ->
+                val parsed = RecipeParser.parse(result.text)
+                if (parsed == null) {
+                    AlertDialog.Builder(this)
+                        .setTitle("No recipe found")
+                        .setMessage("I couldn't find recipe settings in that picture. Try a screenshot where the settings text is clear and not covered.")
+                        .setPositiveButton("OK", null).show()
+                    return@addOnSuccessListener
+                }
+                val r = parsed.recipe
+                val msg = StringBuilder()
+                msg.append(r.summary()).append("
+
+")
+                msg.append("Found: ").append(parsed.found.joinToString(", ")).append('
+')
+                if (parsed.missing.isNotEmpty()) msg.append("Not found (set to default): ").append(parsed.missing.joinToString(", "))
+                val nameInput = android.widget.EditText(this).apply { setText(r.name); setSingleLine(true) }
+                val box = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0)
+                    addView(TextView(this@MainActivity).apply { text = msg; textSize = 13f })
+                    addView(nameInput)
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("Recipe found")
+                    .setView(box)
+                    .setPositiveButton("Save") { _, _ ->
+                        saveRecipe(r.copy(name = nameInput.text.toString().trim().ifBlank { r.name }), true)
+                    }
+                    .setNeutralButton("Save & edit") { _, _ ->
+                        saveRecipe(r.copy(name = nameInput.text.toString().trim().ifBlank { r.name }), true)
+                        openEditor()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            .addOnFailureListener { e ->
+                Toast.makeText(this, "Couldn't read text: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+    }
+
+    // ------------------------------------------------------------------ Re-edit a photo
+
+    private fun reEditPhoto(uri: Uri) {
+        val look = lookNow
+        val lut = lutNow
+        val (name, desc) = currentLookLabel()
+        var displayName = ""
+        runCatching {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) displayName = c.getString(0)
+            }
+        }
+        val original = File(File(filesDir, "originals"), displayName)
+        processingOverlay.visibility = View.VISIBLE
+        processingBar.isIndeterminate = true
+        processingText.text = if (original.exists()) "Re-editing from the clean original…" else "Applying look…"
+        cameraExecutor.execute {
+            try {
+                val source = if (original.exists()) ImageDecoder.createSource(original)
+                else ImageDecoder.createSource(contentResolver, uri)
+                val bmp = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val big = max(info.size.width, info.size.height)
+                    if (big > 8192) decoder.setTargetSampleSize(((big + 8191) / 8192))
+                }
+                val src = if (bmp.config == Bitmap.Config.ARGB_8888) bmp else bmp.copy(Bitmap.Config.ARGB_8888, false)
+                val scale = (min(src.width, src.height) / 1080f).coerceAtLeast(1f)
+                val out = FilmShader.process(src, look, lut, scale, 0)
+                val saved = saveJpeg(out, "$name (re-edit): $desc", "FUJISIM_EDIT_${timestamp()}.jpg")
+                val small = Bitmap.createScaledBitmap(out, 160, (160f * out.height / out.width).roundToInt(), true)
+                runOnUiThread {
+                    processingOverlay.visibility = View.GONE
+                    processingBar.isIndeterminate = false
+                    lastUri = saved; lastMime = "image/jpeg"
+                    thumb.setImageBitmap(small)
+                    Toast.makeText(this, "Saved a new copy with \"$name\"", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    processingOverlay.visibility = View.GONE
+                    processingBar.isIndeterminate = false
+                    Toast.makeText(this, "Couldn't edit that photo: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun currentLookLabel(): Pair<String, String> = when (family) {
+        STYLES -> "${currentStyle.label} style" to styleSummary(styleLive)
+        NORMAL -> "Normal" to normal.summary()
+        else -> live.name to live.summary()
     }
 
     private fun extName(m: Int) = when (m) {
@@ -1186,7 +1392,7 @@ class MainActivity : AppCompatActivity() {
     private fun pushPreviewShader(time: Float) {
         val w = previewView.width.toFloat().coerceAtLeast(1f)
         val h = previewView.height.toFloat().coerceAtLeast(1f)
-        previewShader.set(lookNow, lutNow, w, h, 1f, time, if (showOriginal) 0f else 1f)
+        previewShader.set(lookNow, lutNow, w, h, 1f, time, if (showOriginal) 0f else 1f, zebraOn && !showOriginal)
         previewView.setRenderEffect(previewShader.renderEffect())
     }
 
@@ -1250,10 +1456,13 @@ class MainActivity : AppCompatActivity() {
         recipeBar.removeAllViews()
         cardThumbs.clear()
         when (family) {
-            FUJI -> for (r in recipes) {
-                recipeBar.addView(card(r.id, if (r.builtIn) r.name else "★ ${r.name}", r.id == current.id,
-                    { if (r.id == current.id) refreshLook(showInfoPill = true) else selectRecipe(r) },
-                    { selectRecipe(r); openEditor() }))
+            FUJI -> {
+                for (r in recipes) {
+                    recipeBar.addView(card(r.id, if (r.builtIn) r.name else "★ ${r.name}", r.id == current.id,
+                        { if (r.id == current.id) refreshLook(showInfoPill = true) else selectRecipe(r) },
+                        { selectRecipe(r); openEditor() }))
+                }
+                recipeBar.addView(card(null, "Add recipe", false, { showAddRecipeMenu() }, null))
             }
             NORMAL -> {
                 val presets = listOf(NormalPreset("Default", NormalSettings())) + prefs.normalPresets
@@ -1489,8 +1698,8 @@ class MainActivity : AppCompatActivity() {
 
         val look = lookNow
         val lut = lutNow
-        val name = when (family) { STYLES -> "${currentStyle.label} style"; NORMAL -> "Normal"; else -> live.name }
-        val desc = when (family) { STYLES -> styleSummary(styleLive); NORMAL -> normal.summary(); else -> live.summary() }
+        val (name, desc) = currentLookLabel()
+        val keepOriginal = prefs.keepOriginals
         val previewWidth = previewView.width.coerceAtLeast(1)
 
         capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
@@ -1500,9 +1709,11 @@ class MainActivity : AppCompatActivity() {
                     val raw = try { image.toBitmap() } finally { image.close() }
                     val src = limitSize(raw, 8192)
                     val scale = (min(src.width, src.height).toFloat() / previewWidth).coerceAtLeast(1f)
+                    val fileName = "FUJISIM_${timestamp()}.jpg"
+                    if (keepOriginal) runCatching { saveOriginal(src, rotation, fileName) }
                     val out = FilmShader.process(src, look, lut, scale, rotation)
                     src.recycle()
-                    val uri = saveJpeg(out, "$name: $desc")
+                    val uri = saveJpeg(out, "$name: $desc", fileName)
                     val small = Bitmap.createScaledBitmap(out, 160, (160f * out.height / out.width).roundToInt(), true)
                     runOnUiThread {
                         lastUri = uri
@@ -1537,11 +1748,28 @@ class MainActivity : AppCompatActivity() {
         return out
     }
 
-    private fun timestamp() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    private fun timestamp() = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
 
-    private fun saveJpeg(bmp: Bitmap, description: String): Uri {
+    /** Clean, un-styled copy kept privately so the photo can be re-edited with another look later. */
+    private fun saveOriginal(src: Bitmap, rotation: Int, fileName: String) {
+        val dir = File(filesDir, "originals").apply { mkdirs() }
+        val f = File(dir, fileName)
+        f.outputStream().use { src.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        val orientation = when (rotation) {
+            90 -> ExifInterface.ORIENTATION_ROTATE_90
+            180 -> ExifInterface.ORIENTATION_ROTATE_180
+            270 -> ExifInterface.ORIENTATION_ROTATE_270
+            else -> ExifInterface.ORIENTATION_NORMAL
+        }
+        ExifInterface(f.absolutePath).apply {
+            setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            saveAttributes()
+        }
+    }
+
+    private fun saveJpeg(bmp: Bitmap, description: String, fileName: String = "FUJISIM_${timestamp()}.jpg"): Uri {
         val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, "FUJISIM_${timestamp()}.jpg")
+            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
             put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/FujiSim")
             put(MediaStore.Images.Media.DATE_TAKEN, System.currentTimeMillis())

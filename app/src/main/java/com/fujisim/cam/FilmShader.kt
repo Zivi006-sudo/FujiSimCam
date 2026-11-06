@@ -32,13 +32,14 @@ class FilmShader {
     }
 
     /** lutImage: the loaded LUT for look.lut (null = none / failed to load). */
-    fun set(look: Look, lutImage: LutImage?, width: Float, height: Float, scale: Float, time: Float, mix: Float) {
+    fun set(look: Look, lutImage: LutImage?, width: Float, height: Float, scale: Float, time: Float, mix: Float, zebra: Boolean = false) {
         setLut(lutImage ?: LutLibrary.identity)
         put("uSize", floatArrayOf(width, height))
         put("uScale", floatArrayOf(scale))
         put("uTime", floatArrayOf(time))
         for ((name, v) in look.uniforms(mix)) put(name, v)
         if (lutImage == null) put("uLutMix", floatArrayOf(0f))
+        put("uZebra", floatArrayOf(if (zebra) 1f else 0f))
     }
 
     private fun put(name: String, v: FloatArray) {
