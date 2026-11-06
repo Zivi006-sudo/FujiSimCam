@@ -29,6 +29,7 @@ data class Look(
     val vignette: Float = 0f,       // 0..1
     val halation: Float = 0f,       // 0..1
     val cornerSoft: Float = 0f,     // 0..1
+    val denoise: Float = 0.8f,      // light noise reduction before the look, 0..1
 ) {
     fun withLens(l: LensSettings) = copy(
         mist = l.mist, vignette = l.vignette, halation = l.halation, cornerSoft = l.cornerSoft,
@@ -67,6 +68,7 @@ data class Look(
         "uVignette" to floatArrayOf(vignette),
         "uHalation" to floatArrayOf(halation),
         "uCornerSoft" to floatArrayOf(cornerSoft),
+        "uDenoise" to floatArrayOf(denoise),
     )
 
     companion object {
@@ -90,8 +92,8 @@ data class Look(
                 monoTone = p.monoTone,
                 chrome = r.chrome * 0.5f,
                 chromeBlue = r.chromeBlue * 0.5f,
-                grain = when (r.grain) { 1 -> 0.045f; 2 -> 0.085f; else -> 0f },
-                grainSize = if (r.grainLarge) 2.2f else 1.2f,
+                grain = when (r.grain) { 1 -> 0.022f; 2 -> 0.038f; else -> 0f },
+                grainSize = if (r.grainLarge) 1.6f else 1.0f,
                 sharp = r.sharpness * 0.22f,
                 clarity = r.clarity / 5f,
                 warmth = r.warmth / 10f,
@@ -130,8 +132,8 @@ data class Look(
                 ),
                 mono = if (b.mono) s.palette.coerceIn(0f, 1f) else 0f,
                 warmth = b.warmth * k,
-                grain = s.grain.coerceIn(0f, 1f) * 0.1f,
-                grainSize = 1.4f,
+                grain = s.grain.coerceIn(0f, 1f) * 0.05f,
+                grainSize = 1.2f,
                 sharp = s.detail.coerceIn(-1f, 1f) * 0.9f,
                 clarity = s.detail.coerceIn(-1f, 1f) * 0.35f,
             )

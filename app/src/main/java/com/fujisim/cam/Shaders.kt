@@ -45,6 +45,7 @@ uniform float uMist;
 uniform float uVignette;
 uniform float uHalation;
 uniform float uCornerSoft;
+uniform float uDenoise;
 """
 
     private const val CORE = """
@@ -118,6 +119,25 @@ vec3 applyLut(vec3 c) {
 vec3 grade(vec3 orig, vec2 p) {
     vec3 c = orig;
     float s = uScale;
+
+    // Light noise reduction: smooth colour noise strongly, luminance gently, but only across similar tones
+    if (uDenoise > 0.0) {
+        float od = 1.25 * s;
+        vec3 n0 = src(p + vec2(od, 0.0));
+        vec3 n1 = src(p - vec2(od, 0.0));
+        vec3 n2 = src(p + vec2(0.0, od));
+        vec3 n3 = src(p - vec2(0.0, od));
+        float L0 = dot(c, LUMA);
+        float l0 = dot(n0, LUMA); float l1 = dot(n1, LUMA); float l2 = dot(n2, LUMA); float l3 = dot(n3, LUMA);
+        float w0 = exp(-abs(l0 - L0) * 25.0); float w1 = exp(-abs(l1 - L0) * 25.0);
+        float w2 = exp(-abs(l2 - L0) * 25.0); float w3 = exp(-abs(l3 - L0) * 25.0);
+        float wsum = 1.0 + w0 + w1 + w2 + w3;
+        vec3 chromaAvg = ((c - vec3(L0)) + (n0 - vec3(l0)) * w0 + (n1 - vec3(l1)) * w1 +
+                          (n2 - vec3(l2)) * w2 + (n3 - vec3(l3)) * w3) / wsum;
+        float lAvg = (L0 + l0 * w0 + l1 * w1 + l2 * w2 + l3 * w3) / wsum;
+        float Ln = mix(L0, lAvg, 0.35 * uDenoise);
+        c = vec3(Ln) + mix(c - vec3(L0), chromaAvg, uDenoise);
+    }
 
     // Sharpness / detail
     if (uSharp != 0.0) {
@@ -233,10 +253,11 @@ vec3 grade(vec3 orig, vec2 p) {
 
     // Film grain (moves over time in video / live view)
     if (uGrain > 0.0) {
-        float cell = uGrainSize * s;
+        // Fine, film-like grain: small specks that scale gently with resolution, strongest in mid-tones
+        float cell = uGrainSize * sqrt(max(s, 1.0));
         vec2 off = vec2(fract(uTime * 0.371) * 517.0, fract(uTime * 0.613) * 331.0);
-        float g = vnoise(p / cell + off) + vnoise(p / cell * 1.7 + off.yx + vec2(13.1, 7.3)) - 1.0;
-        c += vec3(g * uGrain * (0.35 + 2.6 * Lt * (1.0 - Lt)));
+        float g = vnoise(p / cell + off) * 0.6 + hash12(floor(p / cell) + off.yx) * 0.4 - 0.5;
+        c += vec3(g * 2.0 * uGrain * (0.2 + 2.4 * Lt * (1.0 - Lt)));
     }
 
     c = clamp(c, 0.0, 1.0);
