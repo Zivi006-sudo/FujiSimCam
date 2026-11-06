@@ -694,9 +694,8 @@ class MainActivity : AppCompatActivity() {
     private fun updateHistogram() {
         if (!histOn || histBusy || recording != null) return
         val frame = runCatching { previewView.bitmap }.getOrNull() ?: return
-        val imgH = (frame.width / grid.imageAspect).roundToInt().coerceAtMost(frame.height).coerceAtLeast(1)
-        val small = Bitmap.createScaledBitmap(Bitmap.createBitmap(frame, 0, 0, frame.width, imgH), 96,
-            (96f * imgH / frame.width).roundToInt().coerceAtLeast(1), false)
+        val img = imageCrop(frame)
+        val small = Bitmap.createScaledBitmap(img, 96, (96f * img.height / img.width).roundToInt().coerceAtLeast(1), false)
         val look = lookNow
         val lut = lutNow
         histBusy = true
@@ -844,16 +843,16 @@ class MainActivity : AppCompatActivity() {
         val id = activePhysicalId ?: "logical"
         val frame = runCatching { previewView.bitmap }.getOrNull()
         if (frame == null) { Toast.makeText(this, "Camera not ready", Toast.LENGTH_SHORT).show(); return }
-        val imgH = (frame.width / grid.imageAspect).roundToInt().coerceAtMost(frame.height)
-        val cx = frame.width / 2; val cy = imgH / 2
-        val r = (min(frame.width, imgH) * 0.12f).roundToInt().coerceAtLeast(4)
+        val img = imageCrop(frame)
+        val cx = img.width / 2; val cy = img.height / 2
+        val r = (min(img.width, img.height) * 0.12f).roundToInt().coerceAtLeast(4)
         var sr = 0.0; var sg = 0.0; var sb = 0.0; var n = 0
         val px = IntArray(1)
         var y = cy - r
         while (y < cy + r) {
             var x = cx - r
             while (x < cx + r) {
-                frame.getPixels(px, 0, 1, x, y, 1, 1)
+                img.getPixels(px, 0, 1, x, y, 1, 1)
                 fun lin(v: Int) = Math.pow(v / 255.0, 2.2)
                 sr += lin(Color.red(px[0])); sg += lin(Color.green(px[0])); sb += lin(Color.blue(px[0])); n++
                 x += 3
@@ -941,6 +940,8 @@ class MainActivity : AppCompatActivity() {
             val ratio = if (videoMode) AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
             else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
             grid.imageAspect = if (videoMode) 9f / 16f else 3f / 4f
+            // Photo (4:3) fills the width, top-aligned; video (16:9) is taller than the space, so centre it.
+            previewView.scaleType = if (videoMode) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FIT_START
 
             val previewBuilder = Preview.Builder()
                 .setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build())
@@ -1486,12 +1487,24 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /** The part of the PreviewView bitmap that actually shows the camera image (no black bars). */
+    private fun imageCrop(frame: Bitmap): Bitmap {
+        val fw = frame.width.toFloat(); val fh = frame.height.toFloat()
+        val a = grid.imageAspect
+        return if (fw / fh > a) {
+            val w = (fh * a).roundToInt().coerceIn(1, frame.width)
+            Bitmap.createBitmap(frame, ((frame.width - w) / 2).coerceAtLeast(0), 0, w, frame.height)
+        } else {
+            val h = (fw / a).roundToInt().coerceIn(1, frame.height)
+            Bitmap.createBitmap(frame, 0, 0, frame.width, h)
+        }
+    }
+
     /** Render each card's thumbnail from the current camera frame with that card's look. */
     private fun refreshThumbnails() {
         if (recording != null || cardThumbs.isEmpty() || isFinishing || family == STYLES) return
         val frame = runCatching { previewView.bitmap }.getOrNull() ?: return
-        val imgH = (frame.width / grid.imageAspect).roundToInt().coerceAtMost(frame.height)
-        val cropped = Bitmap.createBitmap(frame, 0, 0, frame.width, imgH.coerceAtLeast(1))
+        val cropped = imageCrop(frame)
         val small = Bitmap.createScaledBitmap(cropped, 132, (132f * cropped.height / cropped.width).roundToInt().coerceAtLeast(1), true)
         val jobs: List<Pair<String, Look>> = when (family) {
             FUJI -> recipes.map { r -> r.id to Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, wb.useRecipe).gains).copy(grain = 0f) }

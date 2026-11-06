@@ -73,7 +73,11 @@ class FocusOverlay @JvmOverloads constructor(
         }
         val showBox = fx >= 0 && (locked || System.currentTimeMillis() < visibleUntil)
         if (!showBox) {
-            if (ev != 0f) drawEvLabel(canvas, width - 70 * density, 100 * density)
+            if (ev != 0f) {
+                label.textAlign = Paint.Align.CENTER
+                drawEvLabel(canvas, width / 2f, 100 * density)
+                label.textAlign = Paint.Align.LEFT
+            }
             return
         }
         val half = 36 * density
