@@ -65,6 +65,31 @@ class CleanMerge(ref: Bitmap) {
         return bx to by
     }
 
+    /** Final ±1 px refinement at full resolution on a central patch (green channel). */
+    private fun refineFull(px: IntArray, sx: Int, sy: Int): Pair<Int, Int> {
+        val patch = 384
+        val x0 = (width - patch) / 2; val y0 = (height - patch) / 2
+        var best = Long.MAX_VALUE; var bx = sx; var by = sy
+        for (dy in sy - 1..sy + 1) for (dx in sx - 1..sx + 1) {
+            var sad = 0L
+            var y = y0
+            while (y < y0 + patch) {
+                val ys = y + dy
+                if (ys in 0 until height) {
+                    var x = x0
+                    while (x < x0 + patch) {
+                        val xs = x + dx
+                        if (xs in 0 until width) sad += abs((refPx[y * width + x] shr 8 and 255) - (px[ys * width + xs] shr 8 and 255))
+                        x++
+                    }
+                }
+                y++
+            }
+            if (sad < best) { best = sad; bx = dx; by = dy }
+        }
+        return bx to by
+    }
+
     /** Add one frame. Returns false if it was too different to use (big movement). */
     fun add(frame: Bitmap): Boolean {
         if (frame.width != width || frame.height != height) return false
@@ -77,10 +102,32 @@ class CleanMerge(ref: Bitmap) {
         val frHalf = luma(px, width, height, half)
         val hw = width / half; val hh = height / half
         val (fx, fy) = bestShift(refHalf, frHalf, hw, hh, 3, cx * 4, cy * 4)
-        val dx = fx * half; val dy = fy * half
+        val (dx, dy) = refineFull(px, fx * half, fy * half)
         if (abs(dx) > width / 10 || abs(dy) > height / 10) return false
 
-        val threshold = 42
+        // Ghost threshold adapts to the noise level: median difference of aligned pixels × 3.
+        val hist = IntArray(766)
+        var yy = 0
+        while (yy < height) {
+            val ys = yy + dy
+            if (ys in 0 until height) {
+                var xx = 0
+                while (xx < width) {
+                    val xs = xx + dx
+                    if (xs in 0 until width) {
+                        val r = refPx[yy * width + xx]; val f = px[ys * width + xs]
+                        hist[abs((r shr 16 and 255) - (f shr 16 and 255)) + abs((r shr 8 and 255) - (f shr 8 and 255)) +
+                            abs((r and 255) - (f and 255))]++
+                    }
+                    xx += 4
+                }
+            }
+            yy += 4
+        }
+        val total = hist.sum()
+        var acc = 0; var median = 0
+        while (median < 765 && acc + hist[median] < total / 2) { acc += hist[median]; median++ }
+        val threshold = maxOf(42, median * 3)
         for (y in 0 until height) {
             val ys = y + dy
             if (ys < 0 || ys >= height) continue
