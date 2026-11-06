@@ -230,6 +230,8 @@ class MainActivity : AppCompatActivity() {
         }
     private val pickScreenshot =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) readRecipeScreenshot(uri) }
+    private val pickMatchSamples =
+        registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(5)) { uris -> if (uris.isNotEmpty()) startMatchLook(uris) }
     private val pickPhotoToEdit =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) reEditPhoto(uri) }
     private val audioPermission =
@@ -710,10 +712,13 @@ class MainActivity : AppCompatActivity() {
     private fun showAddRecipeMenu() {
         AlertDialog.Builder(this)
             .setTitle("Add a recipe")
-            .setItems(arrayOf("From a screenshot of a recipe card", "Import a LUT (.cube)", "Copy the current recipe")) { _, which ->
+            .setItems(arrayOf("From a screenshot of a recipe card", "Match a look from sample photos (1–5)",
+                "Import a LUT (.cube)", "Copy the current recipe")) { _, which ->
                 when (which) {
                     0 -> pickImage(pickScreenshot)
-                    1 -> importLut.launch(arrayOf("*/*"))
+                    1 -> pickMatchSamples.launch(PickVisualMediaRequest.Builder()
+                        .setMediaType(ActivityResultContracts.PickVisualMedia.ImageOnly).build())
+                    2 -> importLut.launch(arrayOf("*/*"))
                     else -> { saveRecipe(current.copy(name = current.name + " copy", credit = ""), true); openEditor() }
                 }
             }
@@ -762,6 +767,79 @@ class MainActivity : AppCompatActivity() {
             .addOnFailureListener { e ->
                 Toast.makeText(this, "Couldn't read text: ${e.message}", Toast.LENGTH_LONG).show()
             }
+    }
+
+    // ------------------------------------------------------------------ Match Look
+
+    private fun startMatchLook(uris: List<Uri>) {
+        val nameInput = android.widget.EditText(this).apply { setText("My look"); setSingleLine(true) }
+        var strength = 0.8f
+        @Suppress("UseSwitchCompatOrMaterialCode")
+        val cropUi = android.widget.CheckBox(this).apply {
+            text = "These are screenshots (ignore app buttons & captions)"; isChecked = true
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0)
+            addView(TextView(this@MainActivity).apply {
+                text = "Copies the colour grade of ${uris.size} photo${if (uris.size > 1) "s" else ""} into a new recipe. " +
+                    "Point the camera at a scene similar to the samples for the best match."
+                textSize = 13f
+            })
+            addView(nameInput)
+            addView(cropUi)
+            addView(UiKit.slider(this@MainActivity, "Strength", 0.2f, 1f, strength, { "${(it * 100).roundToInt()}%" }) { strength = it })
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Match Look")
+            .setView(box)
+            .setPositiveButton("Create") { _, _ ->
+                buildMatchLook(uris, nameInput.text.toString().trim().ifBlank { "My look" }, strength, cropUi.isChecked)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun buildMatchLook(uris: List<Uri>, name: String, strength: Float, cropUi: Boolean) {
+        processingOverlay.visibility = View.VISIBLE
+        processingBar.isIndeterminate = true
+        processingText.text = "Learning the look from ${uris.size} photo${if (uris.size > 1) "s" else ""}…"
+        val frame = runCatching { previewView.bitmap?.let { imageCrop(it) } }.getOrNull()
+        cameraExecutor.execute {
+            try {
+                val samples = uris.mapNotNull { uri ->
+                    runCatching {
+                        ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { d, info, _ ->
+                            d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                            val big = max(info.size.width, info.size.height)
+                            if (big > 1200) d.setTargetSampleSize((big + 1199) / 1200)
+                        }
+                    }.getOrNull()
+                }
+                require(samples.isNotEmpty()) { "Couldn't open those photos" }
+                val ref = MatchLook.analyse(samples, cropUi)
+                val live = frame?.let { MatchLook.analyse(listOf(it), false) }
+                val src = MatchLook.blendWithTypical(live)
+                val n = 33
+                val lut = MatchLook.buildLut(ref, src, strength, n)
+                val fileName = "match_" + UUID.randomUUID().toString() + ".cube"
+                MatchLook.writeCube(File(LutLibrary.lutDir(this), fileName), lut, n, name)
+                val recipe = Recipe(name = name, film = FilmSim.NONE, lut = "file:$fileName",
+                    credit = "Match Look · ${samples.size} photo${if (samples.size > 1) "s" else ""}")
+                runOnUiThread {
+                    processingOverlay.visibility = View.GONE
+                    processingBar.isIndeterminate = false
+                    if (family != FUJI) setFamily(FUJI, keepVideo = videoMode)
+                    saveRecipe(recipe, true)
+                    showInfo("$name — created from your photos. Long-press it to fine-tune.")
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    processingOverlay.visibility = View.GONE
+                    processingBar.isIndeterminate = false
+                    Toast.makeText(this, "Match Look failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------ Re-edit a photo
