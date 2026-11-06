@@ -67,6 +67,10 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCase
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.extensions.ExtensionMode
+import androidx.camera.extensions.ExtensionsManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -185,6 +189,18 @@ class MainActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val cardThumbs = HashMap<String, ImageView>()
 
+    // Xiaomi camera extensions (Night / HDR / Bokeh / Auto)
+    private var extensionsManager: ExtensionsManager? = null
+    private var extTried = false
+    private var availableExt: List<Int> = emptyList()
+    private var extMode = ExtensionMode.NONE
+    private lateinit var nightBtn: TextView
+
+    // Lens colour matching
+    @Volatile private var activePhysicalId: String? = null
+    private var lensNames: Map<String, String> = emptyMap()
+    private var lensCorrection: Map<String, FloatArray> = emptyMap()
+
     private val cameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startCamera()
@@ -229,6 +245,11 @@ class MainActivity : AppCompatActivity() {
     // Live camera results: ISO for adaptive noise reduction
     private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            val pid = runCatching { result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) }.getOrNull()
+            if (pid != null && pid != activePhysicalId) {
+                activePhysicalId = pid
+                mainHandler.post { refreshLook() }
+            }
             val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
             val bucket = when {
                 iso <= 200 -> 0
@@ -332,6 +353,11 @@ class MainActivity : AppCompatActivity() {
             (FilmSim.values().mapNotNull { it.lut } + "natural").forEach { LutLibrary.get(applicationContext, "asset:$it") }
         }.start()
 
+        nightBtn = findViewById(R.id.nightBtn)
+        Thread {
+            val names = CameraReport.lenses(applicationContext).associate { it.id to it.label }
+            runOnUiThread { lensNames = names; recomputeLensCorrection() }
+        }.start()
         setupStyleControls()
         setupTopBar()
         setupModeBar()
@@ -446,6 +472,20 @@ class MainActivity : AppCompatActivity() {
             updateModeButtons()
             startCamera()
         }
+        nightBtn.setOnClickListener {
+            if (recording != null || availableExt.isEmpty()) return@setOnClickListener
+            val cycle = listOf(ExtensionMode.NONE) + availableExt
+            extMode = cycle[(cycle.indexOf(extMode).coerceAtLeast(0) + 1) % cycle.size]
+            it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            showInfo(when (extMode) {
+                ExtensionMode.NIGHT -> "Night mode (Xiaomi) — hold still while shooting"
+                ExtensionMode.HDR -> "HDR (Xiaomi)"
+                ExtensionMode.BOKEH -> "Bokeh — background blur (Xiaomi)"
+                ExtensionMode.AUTO -> "Auto — Night/HDR when needed (Xiaomi)"
+                else -> "Standard capture"
+            })
+            startCamera()
+        }
         findViewById<View>(R.id.moreBtn).setOnClickListener {
             if (recording != null) return@setOnClickListener
             if (editing) closeEditor() else openSettings()
@@ -542,7 +582,123 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Extra rows for the Settings sheet (filled in by later features). */
-    private fun settingsExtraRows(): List<View> = emptyList()
+    private fun settingsExtraRows(): List<View> {
+        val rows = mutableListOf<View>()
+        // Night / HDR / Bokeh
+        rows += UiKit.section(this, "NIGHT · HDR · BOKEH (XIAOMI)")
+        rows += UiKit.note(this, if (availableExt.isEmpty())
+            "Xiaomi doesn't offer Night, HDR or Bokeh to other apps on this camera. The app's own low-light noise reduction is still on."
+        else "Available here: " + availableExt.joinToString(", ") { extName(it) } +
+            ". Use the ☾ button at the top to switch. Your recipe or style is applied on top.")
+
+        // Lens colour matching
+        rows += UiKit.section(this, "LENS COLOUR MATCHING")
+        rows += UiKit.note(this, "Point the camera at something plain white or grey (a wall or paper) so it fills the middle of the frame. " +
+            "Measure the 1× lens first, then zoom to 0.6×, 3.2× and 5× and measure each. Recipes will then look the same on every lens.")
+        val status = UiKit.note(this, lensStatusText())
+        rows += status
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        btnRow.addView(UiKit.pill(this, "Measure this lens", "#2E4A6B") { measureLens(); status.text = lensStatusText() })
+        btnRow.addView(UiKit.pill(this, "Clear", "#333333") {
+            prefs.lensCalib = emptyMap(); prefs.lensCalibRef = null
+            recomputeLensCorrection(); refreshLook(); status.text = lensStatusText()
+        })
+        rows += btnRow
+
+        // RAW test
+        rows += UiKit.section(this, "RAW TEST")
+        rows += UiKit.note(this, "Checks which lenses give apps RAW (needed for the RAW colour pipeline). Send me a screenshot of the report.")
+        rows += LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            addView(UiKit.pill(this@MainActivity, "Run camera report", "#2E4A6B") { showCameraReport() })
+        }
+        return rows
+    }
+
+    private fun extName(m: Int) = when (m) {
+        ExtensionMode.NIGHT -> "Night"
+        ExtensionMode.HDR -> "HDR"
+        ExtensionMode.BOKEH -> "Bokeh"
+        ExtensionMode.AUTO -> "Auto"
+        else -> "Standard"
+    }
+
+    private fun lensName(id: String?) = if (id == null) "unknown" else (lensNames[id] ?: "camera $id")
+
+    private fun lensStatusText(): String {
+        val cal = prefs.lensCalib
+        val ref = prefs.lensCalibRef
+        val active = activePhysicalId
+        val sb = StringBuilder("Active lens: ${lensName(active)}")
+        if (active == null) sb.append(" (this phone doesn't report the active lens to apps)")
+        if (cal.isEmpty()) sb.append("\nNo lenses measured yet.")
+        else cal.keys.forEach { sb.append("\n✓ ${lensName(it)}${if (it == ref) " (reference)" else ""}") }
+        return sb.toString()
+    }
+
+    /** Average the centre of the (unprocessed) preview frame and store it for the active lens. */
+    private fun measureLens() {
+        val id = activePhysicalId ?: "logical"
+        val frame = runCatching { previewView.bitmap }.getOrNull()
+        if (frame == null) { Toast.makeText(this, "Camera not ready", Toast.LENGTH_SHORT).show(); return }
+        val imgH = (frame.width / grid.imageAspect).roundToInt().coerceAtMost(frame.height)
+        val cx = frame.width / 2; val cy = imgH / 2
+        val r = (min(frame.width, imgH) * 0.12f).roundToInt().coerceAtLeast(4)
+        var sr = 0.0; var sg = 0.0; var sb = 0.0; var n = 0
+        val px = IntArray(1)
+        var y = cy - r
+        while (y < cy + r) {
+            var x = cx - r
+            while (x < cx + r) {
+                frame.getPixels(px, 0, 1, x, y, 1, 1)
+                fun lin(v: Int) = Math.pow(v / 255.0, 2.2)
+                sr += lin(Color.red(px[0])); sg += lin(Color.green(px[0])); sb += lin(Color.blue(px[0])); n++
+                x += 3
+            }
+            y += 3
+        }
+        if (n == 0) return
+        val rgb = floatArrayOf((sr / n).toFloat(), (sg / n).toFloat(), (sb / n).toFloat())
+        if (rgb.maxOrNull()!! < 0.02f) { Toast.makeText(this, "Too dark — point at something bright and white", Toast.LENGTH_LONG).show(); return }
+        prefs.lensCalib = prefs.lensCalib + (id to rgb)
+        if (prefs.lensCalibRef == null || zoomRatio in 0.95f..1.3f) {
+            if (prefs.lensCalibRef == null || prefs.lensCalibRef == id || zoomRatio in 0.95f..1.3f) prefs.lensCalibRef = id
+        }
+        recomputeLensCorrection()
+        refreshLook()
+        Toast.makeText(this, "Measured ${lensName(id)}", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Gains that make each measured lens match the reference lens. */
+    private fun recomputeLensCorrection() {
+        val cal = prefs.lensCalib
+        val ref = prefs.lensCalibRef?.let { cal[it] }
+        lensCorrection = if (ref == null) emptyMap() else cal.mapValues { (_, m) ->
+            val g = FloatArray(3) { i -> (ref[i] / m[i].coerceAtLeast(1e-4f)) }
+            val l = 0.2126f * g[0] + 0.7152f * g[1] + 0.0722f * g[2]
+            FloatArray(3) { i -> (g[i] / l).coerceIn(0.8f, 1.25f) }
+        }
+    }
+
+    private fun showCameraReport() {
+        val extras = listOf(
+            "Night/HDR/Bokeh/Auto for apps: " + (if (availableExt.isEmpty()) "none" else availableExt.joinToString { extName(it) }),
+            "10-bit HLG video: " + (if (hlgSupported) "yes" else "unknown/no (check in VIDEO with LOG on)"),
+            "Active lens now: ${lensName(activePhysicalId)} (id ${activePhysicalId ?: "—"})",
+            "Phone sharpening off allowed: ${if (edgeOffSupported) "yes" else "no"}",
+        )
+        val text = CameraReport.text(this, extras)
+        AlertDialog.Builder(this)
+            .setTitle("Camera report")
+            .setMessage(text)
+            .setPositiveButton("Copy") { _, _ ->
+                val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                cb.setPrimaryClip(ClipData.newPlainText("FujiSim camera report", text))
+                Toast.makeText(this, "Copied — paste it to Claude", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
 
     // ------------------------------------------------------------------ Camera
 
@@ -562,14 +718,30 @@ class MainActivity : AppCompatActivity() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get()
-            val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+            if (!extTried) {
+                extTried = true
+                val ef = ExtensionsManager.getInstanceAsync(this, provider)
+                ef.addListener({
+                    extensionsManager = runCatching { ef.get() }.getOrNull()
+                    startCamera()
+                }, ContextCompat.getMainExecutor(this))
+                return@addListener
+            }
+            val baseSelector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+            val em = extensionsManager
+            availableExt = if (em == null) emptyList() else listOf(
+                ExtensionMode.NIGHT, ExtensionMode.HDR, ExtensionMode.BOKEH, ExtensionMode.AUTO
+            ).filter { runCatching { em.isExtensionAvailable(baseSelector, it) }.getOrDefault(false) }
+            if (extMode !in availableExt) extMode = ExtensionMode.NONE
+            val useExt = !videoMode && extMode != ExtensionMode.NONE && em != null
+            val selector = if (useExt) em!!.getExtensionEnabledCameraSelector(baseSelector, extMode) else baseSelector
             val ratio = if (videoMode) AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
             else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
             grid.imageAspect = if (videoMode) 9f / 16f else 3f / 4f
 
             val previewBuilder = Preview.Builder()
                 .setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build())
-            Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(captureCallback)
+            if (!useExt) Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(captureCallback)
             val preview = previewBuilder.build()
             preview.setSurfaceProvider(previewView.surfaceProvider)
 
@@ -605,11 +777,11 @@ class MainActivity : AppCompatActivity() {
                             ResolutionStrategy(Size(4000, 3000), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
                         ).build()
                 }
-                val capture = ImageCapture.Builder()
-                    .setResolutionSelector(resSelector)
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                    .setJpegQuality(95)
-                    .build()
+                val capBuilder = ImageCapture.Builder().setJpegQuality(95)
+                if (!useExt) {
+                    capBuilder.setResolutionSelector(resSelector).setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                }
+                val capture = capBuilder.build()
                 imageCapture = capture
                 videoCapture = null
                 useCase = capture
@@ -633,6 +805,11 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, "Camera error: ${e2.message}", Toast.LENGTH_LONG).show()
                         return@addListener
                     }
+                } else if (useExt) {
+                    extMode = ExtensionMode.NONE
+                    Toast.makeText(this, "That mode isn't available right now — switched back to standard", Toast.LENGTH_LONG).show()
+                    mainHandler.post { startCamera() }
+                    return@addListener
                 } else {
                     Toast.makeText(this, "Camera error: ${e.message}", Toast.LENGTH_LONG).show()
                     return@addListener
@@ -970,6 +1147,10 @@ class MainActivity : AppCompatActivity() {
         val tint = WbWheel.gains(wb.wheelX, wb.wheelY)
         var lk = base.withLens(lens).let { it.copy(wb = FloatArray(3) { i -> it.wb[i] * tint[i] }) }
         if (lk.denoise > 0f) lk = lk.copy(denoise = isoDenoise)
+        val corr = activePhysicalId?.let { lensCorrection[it] }
+        if (corr != null && lensFacing == CameraSelector.LENS_FACING_BACK) {
+            lk = lk.copy(wb = FloatArray(3) { i -> lk.wb[i] * corr[i] })
+        }
         return lk
     }
 
@@ -1130,6 +1311,15 @@ class MainActivity : AppCompatActivity() {
         }
         gridBtn.setTextColor(if (grid.mode != GridOverlay.Mode.OFF) Color.parseColor(YELLOW) else Color.WHITE)
         familyBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
+        nightBtn.visibility = if (!videoMode && availableExt.isNotEmpty()) View.VISIBLE else View.GONE
+        nightBtn.text = when (extMode) {
+            ExtensionMode.NIGHT -> "☾"
+            ExtensionMode.HDR -> "HDR"
+            ExtensionMode.BOKEH -> "◉"
+            ExtensionMode.AUTO -> "A"
+            else -> "☾"
+        }
+        nightBtn.setTextColor(if (extMode != ExtensionMode.NONE) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
         familyBtn.text = "${FAMILY_NAMES[family]} ▾"
         logBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
         logBtn.text = when {

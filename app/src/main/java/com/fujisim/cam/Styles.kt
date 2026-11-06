@@ -197,6 +197,24 @@ class AppPrefs(ctx: Context) {
         get() = prefs.getInt("family", if (prefs.getBoolean("stylesMode", false)) 1 else 0)
         set(v) { prefs.edit().putInt("family", v).apply() }
 
+    /** Lens colour calibration: physical camera id -> measured average RGB of a white/grey target. */
+    var lensCalib: Map<String, FloatArray>
+        get() = runCatching {
+            val o = JSONObject(prefs.getString("lensCalib", "{}")!!)
+            o.keys().asSequence().associateWith { k ->
+                val a = o.getJSONArray(k); floatArrayOf(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat())
+            }
+        }.getOrDefault(emptyMap())
+        set(v) {
+            val o = JSONObject()
+            v.forEach { (k, rgb) -> o.put(k, org.json.JSONArray().put(rgb[0].toDouble()).put(rgb[1].toDouble()).put(rgb[2].toDouble())) }
+            prefs.edit().putString("lensCalib", o.toString()).apply()
+        }
+
+    var lensCalibRef: String?
+        get() = prefs.getString("lensCalibRef", null)
+        set(v) { prefs.edit().putString("lensCalibRef", v).apply() }
+
     var gridMode: Int
         get() = prefs.getInt("gridMode", 0)
         set(v) { prefs.edit().putInt("gridMode", v).apply() }
