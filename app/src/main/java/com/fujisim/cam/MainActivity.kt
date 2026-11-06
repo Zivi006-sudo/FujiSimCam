@@ -111,6 +111,8 @@ class MainActivity : AppCompatActivity() {
         const val NORMAL = 2
         val FAMILY_NAMES = arrayOf("FUJI", "STYLES", "NORMAL")
         const val YELLOW = "#FFC94A"
+        const val CLEAN_MODE = -100        // our own burst-merge mode, shares the ☾ button with Xiaomi's modes
+        const val CLEAN_FRAMES = 5
     }
 
     // Views
@@ -519,8 +521,8 @@ class MainActivity : AppCompatActivity() {
             startCamera()
         }
         nightBtn.setOnClickListener {
-            if (recording != null || availableExt.isEmpty()) return@setOnClickListener
-            val cycle = listOf(ExtensionMode.NONE) + availableExt
+            if (recording != null) return@setOnClickListener
+            val cycle = listOf(ExtensionMode.NONE, CLEAN_MODE) + availableExt
             extMode = cycle[(cycle.indexOf(extMode).coerceAtLeast(0) + 1) % cycle.size]
             it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             showInfo(when (extMode) {
@@ -528,6 +530,7 @@ class MainActivity : AppCompatActivity() {
                 ExtensionMode.HDR -> "HDR (Xiaomi)"
                 ExtensionMode.BOKEH -> "Bokeh — background blur (Xiaomi)"
                 ExtensionMode.AUTO -> "Auto — Night/HDR when needed (Xiaomi)"
+                CLEAN_MODE -> "Clean — merges $CLEAN_FRAMES shots for less noise (hold still ~2 s)"
                 else -> "Standard capture"
             })
             startCamera()
@@ -788,6 +791,88 @@ class MainActivity : AppCompatActivity() {
             .addOnFailureListener { e ->
                 Toast.makeText(this, "Couldn't read text: ${e.message}", Toast.LENGTH_LONG).show()
             }
+    }
+
+    // ------------------------------------------------------------------ Clean mode (burst merge)
+
+    private fun takeCleanPhoto() {
+        val capture = imageCapture ?: return
+        shutter.isEnabled = false
+        processingOverlay.visibility = View.VISIBLE
+        processingBar.isIndeterminate = false
+        processingBar.progress = 0
+        processingText.text = "Clean mode: hold still… 1/$CLEAN_FRAMES"
+        val look = lookNow
+        val lut = lutNow
+        val (name, desc) = currentLookLabel()
+        val previewWidth = previewView.width.coerceAtLeast(1)
+        val keepOriginal = prefs.keepOriginals
+        var merger: CleanMerge? = null
+        var rotation = 0
+        var shot = 0
+
+        fun fail(msg: String) = runOnUiThread {
+            processingOverlay.visibility = View.GONE
+            shutter.isEnabled = true
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        }
+
+        fun finishMerge() {
+            try {
+                val m = merger ?: return fail("Clean mode failed")
+                runOnUiThread { processingBar.isIndeterminate = true; processingText.text = "Merging ${m.merged + 1} frames…" }
+                val merged = m.result()
+                merger = null
+                val fileName = "FUJISIM_CLEAN_${timestamp()}.jpg"
+                if (keepOriginal) runCatching { saveOriginal(merged, rotation, fileName) }
+                val scale = (min(merged.width, merged.height).toFloat() / previewWidth).coerceAtLeast(1f)
+                // The merge already removed most noise, so go easy on extra noise reduction.
+                val out = FilmShader.process(merged, look.copy(denoise = look.denoise * 0.4f), lut, scale, rotation)
+                merged.recycle()
+                val uri = saveJpeg(out, "$name (Clean): $desc", fileName)
+                val small = Bitmap.createScaledBitmap(out, 160, (160f * out.height / out.width).roundToInt(), true)
+                runOnUiThread {
+                    processingOverlay.visibility = View.GONE
+                    processingBar.isIndeterminate = false
+                    shutter.isEnabled = true
+                    lastUri = uri; lastMime = "image/jpeg"
+                    thumb.setImageBitmap(small)
+                }
+            } catch (e: Throwable) {
+                fail("Clean mode failed: ${e.message}")
+            }
+        }
+
+        lateinit var next: () -> Unit
+        next = {
+            capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    try {
+                        if (shot == 0) rotation = image.imageInfo.rotationDegrees
+                        val bmp = try { image.toBitmap() } finally { image.close() }
+                        val m = merger
+                        if (m == null) merger = CleanMerge(bmp) else m.add(bmp)
+                        bmp.recycle()
+                        shot++
+                        runOnUiThread {
+                            processingBar.progress = shot * 100 / CLEAN_FRAMES
+                            processingText.text = "Clean mode: hold still… ${(shot + 1).coerceAtMost(CLEAN_FRAMES)}/$CLEAN_FRAMES"
+                        }
+                        if (shot < CLEAN_FRAMES) next() else finishMerge()
+                    } catch (e: Throwable) {
+                        merger = null
+                        fail("Clean mode failed: ${e.message}")
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    if (merger != null) finishMerge() else fail("Capture failed: ${exception.message}")
+                }
+            })
+        }
+        flash.alpha = 0.6f
+        flash.animate().alpha(0f).setDuration(250).start()
+        next()
     }
 
     // ------------------------------------------------------------------ RAW
@@ -1123,8 +1208,8 @@ class MainActivity : AppCompatActivity() {
             availableExt = if (em == null) emptyList() else listOf(
                 ExtensionMode.NIGHT, ExtensionMode.HDR, ExtensionMode.BOKEH, ExtensionMode.AUTO
             ).filter { runCatching { em.isExtensionAvailable(baseSelector, it) }.getOrDefault(false) }
-            if (extMode !in availableExt) extMode = ExtensionMode.NONE
-            val useExt = !videoMode && extMode != ExtensionMode.NONE && em != null
+            if (extMode != CLEAN_MODE && extMode !in availableExt) extMode = ExtensionMode.NONE
+            val useExt = !videoMode && extMode != ExtensionMode.NONE && extMode != CLEAN_MODE && em != null
             val selector = if (useExt) em!!.getExtensionEnabledCameraSelector(baseSelector, extMode) else baseSelector
             val ratio = if (videoMode) AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
             else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
@@ -1719,12 +1804,13 @@ class MainActivity : AppCompatActivity() {
         }
         gridBtn.setTextColor(if (grid.mode != GridOverlay.Mode.OFF) Color.parseColor(YELLOW) else Color.WHITE)
         familyBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
-        nightBtn.visibility = if (!videoMode && availableExt.isNotEmpty()) View.VISIBLE else View.GONE
+        nightBtn.visibility = if (!videoMode) View.VISIBLE else View.GONE
         nightBtn.text = when (extMode) {
             ExtensionMode.NIGHT -> "☾"
             ExtensionMode.HDR -> "HDR"
             ExtensionMode.BOKEH -> "◉"
             ExtensionMode.AUTO -> "A"
+            CLEAN_MODE -> "✦"
             else -> "☾"
         }
         nightBtn.setTextColor(if (extMode != ExtensionMode.NONE) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
@@ -1892,6 +1978,7 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ Photo
 
     private fun takePhoto() {
+        if (extMode == CLEAN_MODE) { takeCleanPhoto(); return }
         if (rawMode && extMode == ExtensionMode.NONE && lensFacing == CameraSelector.LENS_FACING_BACK) {
             takeRawPhoto(); return
         }
