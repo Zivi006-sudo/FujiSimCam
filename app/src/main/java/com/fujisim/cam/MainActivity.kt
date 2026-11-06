@@ -1366,7 +1366,7 @@ class MainActivity : AppCompatActivity() {
         lutNow = LutLibrary.get(this, lookNow.lut)
         wbBtn.text = if (wb.useRecipe && family == FUJI) "WB·R" else "WB"
         wbBtn.setTextColor(if (wb.wheelX != 0f || wb.wheelY != 0f || (wb.useRecipe && family == FUJI)) Color.parseColor(YELLOW) else Color.WHITE)
-        val lensOn = lens.mist > 0f || lens.vignette > 0f || lens.halation > 0f || lens.cornerSoft > 0f
+        val lensOn = lens.mist > 0f || lens.vignette > 0f || lens.halation > 0f || lens.cornerSoft > 0f || lens.sunGlow > 0f
         lensBtn.setTextColor(if (lensOn) Color.parseColor(YELLOW) else Color.WHITE)
         if (showInfoPill) {
             when (family) {

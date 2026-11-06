@@ -45,6 +45,7 @@ class LensPanel(
         header.addView(pill("Done", "#FFC94A", Color.BLACK) { onClose() })
         col.addView(header)
 
+        col.addView(slider("Sun glow (golden bloom on sunlit areas)", s.sunGlow) { s = s.copy(sunGlow = it); onChange(s) })
         col.addView(slider("Soft glow (Pro-Mist)", s.mist) { s = s.copy(mist = it); onChange(s) })
         col.addView(slider("Vignette", s.vignette) { s = s.copy(vignette = it); onChange(s) })
         col.addView(slider("Halation (red glow on bright edges)", s.halation) { s = s.copy(halation = it); onChange(s) })

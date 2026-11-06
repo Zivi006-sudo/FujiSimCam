@@ -53,6 +53,7 @@ uniform vec3 uTintM;
 uniform vec3 uTintH;
 uniform vec3 uLumSMH;
 uniform float uZebra;
+uniform float uSunGlow;
 """
 
     private const val CORE = """
@@ -182,7 +183,7 @@ vec3 grade(vec3 orig, vec2 p) {
     // Wide gather for glow (light halos), mist (Pro-Mist diffusion) and halation
     vec3 bloom = vec3(0.0);
     vec3 wide = vec3(0.0);
-    if (uGlow > 0.0 || uMist > 0.0 || uHalation > 0.0) {
+    if (uGlow > 0.0 || uMist > 0.0 || uHalation > 0.0 || uSunGlow > 0.0) {
         float g1 = 7.0 * s;
         float g2 = 22.0 * s;
         float g3 = g2 * 0.7071;
@@ -257,6 +258,15 @@ vec3 grade(vec3 orig, vec2 p) {
     float gwM = max(0.0, 1.0 - gwS - gwH);
     c += uTintS * gwS + uTintM * gwM + uTintH * gwH;
     c += vec3(uLumSMH.x * gwS + uLumSMH.y * gwM + uLumSMH.z * gwH) * 0.18;
+
+    // Sun glow: soft golden bloom only where the scene is bright and warm (sunlit), shadows kept clean and cool
+    if (uSunGlow > 0.0) {
+        float lw = dot(wide, LUMA);
+        float sunMask = smoothstep(0.45, 0.85, lw) * smoothstep(0.0, 0.06, wide.r - wide.b);
+        vec3 glowCol = wide * vec3(1.0, 0.86, 0.62) * sunMask * uSunGlow * 0.6;
+        c = vec3(1.0) - (vec3(1.0) - c) * (vec3(1.0) - glowCol);
+        c += uSunGlow * (1.0 - smoothstep(0.0, 0.45, Lt)) * vec3(-0.012, 0.004, 0.014);
+    }
 
     // Glow, tinted warm like film halation
     c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55);

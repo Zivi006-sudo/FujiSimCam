@@ -36,9 +36,11 @@ data class Look(
     val tintM: FloatArray = FloatArray(3),
     val tintH: FloatArray = FloatArray(3),
     val lumSMH: FloatArray = FloatArray(3),
+    val sunGlow: Float = 0f,
 ) {
     fun withLens(l: LensSettings) = copy(
         mist = l.mist, vignette = l.vignette, halation = l.halation, cornerSoft = l.cornerSoft,
+        sunGlow = maxOf(sunGlow, l.sunGlow),
     )
 
     /** Uniform name -> value (1–3 floats). Size/scale/time are set by the renderer. */
@@ -81,6 +83,7 @@ data class Look(
         "uTintM" to tintM,
         "uTintH" to tintH,
         "uLumSMH" to lumSMH,
+        "uSunGlow" to floatArrayOf(sunGlow),
     )
 
     companion object {
@@ -111,6 +114,7 @@ data class Look(
                 warmth = r.warmth / 10f,
                 glow = r.glow / 10f,
                 lut = r.lut ?: r.film.lut?.let { "asset:$it" },
+                sunGlow = r.sunGlow / 10f,
             )
         }
 

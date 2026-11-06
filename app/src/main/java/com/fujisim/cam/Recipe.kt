@@ -84,6 +84,7 @@ data class Recipe(
     val warmth: Int = 0,            // golden highlight warmth 0..10 (app extra)
     val glow: Int = 0,              // glow around bright light 0..10 (app extra)
     val lut: String? = null,        // imported .cube LUT ("file:..."), overrides the film sim's LUT
+    val sunGlow: Int = 0,           // golden bloom on sunlit areas 0..10 (app extra)
     val credit: String = "",
     val builtIn: Boolean = false,
 ) {
@@ -104,6 +105,7 @@ data class Recipe(
         if (clarity != 0) parts += "Clarity ${s(clarity)}"
         if (warmth != 0) parts += "Warmth $warmth"
         if (glow != 0) parts += "Glow $glow"
+        if (sunGlow != 0) parts += "Sun glow $sunGlow"
         if (ev != 0f) parts += "EV ${evText(ev)}"
         return parts.joinToString(" · ")
     }
@@ -118,6 +120,7 @@ data class Recipe(
         put("ev", ev.toDouble()); put("credit", credit)
         put("warmth", warmth); put("glow", glow)
         if (lut != null) put("lut", lut)
+        put("sunGlow", sunGlow)
     }
 
     companion object {
@@ -144,6 +147,7 @@ data class Recipe(
             warmth = o.optInt("warmth", 0),
             glow = o.optInt("glow", 0),
             lut = if (o.has("lut")) o.optString("lut") else null,
+            sunGlow = o.optInt("sunGlow", 0),
             builtIn = false,
         )
 
@@ -173,6 +177,10 @@ data class Recipe(
 object BuiltIns {
     private const val FXW = "Fuji X Weekly"
     val list = listOf(
+        Recipe("b_golden_street", "Golden Street", FilmSim.CLASSIC_CHROME,
+            dr = 400, highlight = 0.5f, shadow = 1f, color = 1, clarity = -2,
+            grain = 1, chrome = 2, chromeBlue = 1, wb = WbMode.KELVIN, kelvin = 5500, wbR = 2, wbB = -5, ev = 0.33f,
+            warmth = 4, glow = 1, sunGlow = 5, credit = "FujiSim Cam", builtIn = true),
         Recipe("b_golden_hour", "Golden Hour", FilmSim.CLASSIC_CHROME,
             dr = 400, highlight = 0.5f, shadow = 2f, color = 2, clarity = -1,
             grain = 1, chrome = 2, chromeBlue = 1, wb = WbMode.KELVIN, kelvin = 5500, wbR = 3, wbB = -5, ev = 0.33f,

@@ -73,6 +73,7 @@ data class LensSettings(
     val halation: Float = 0f,
     val cornerSoft: Float = 0f,
     val naturalDetail: Boolean = true,
+    val sunGlow: Float = 0f,
 )
 
 /** NORMAL mode settings: base + tone sliders + 3-way colour grading. Ranges are -1..1 unless noted. */
@@ -156,11 +157,12 @@ class AppPrefs(ctx: Context) {
             halation = prefs.getFloat("lens_halation", 0f),
             cornerSoft = prefs.getFloat("lens_corner", 0f),
             naturalDetail = prefs.getBoolean("lens_natural", true),
+            sunGlow = prefs.getFloat("lens_sunglow", 0f),
         )
         set(v) {
             prefs.edit().putFloat("lens_mist", v.mist).putFloat("lens_vignette", v.vignette)
                 .putFloat("lens_halation", v.halation).putFloat("lens_corner", v.cornerSoft)
-                .putBoolean("lens_natural", v.naturalDetail).apply()
+                .putBoolean("lens_natural", v.naturalDetail).putFloat("lens_sunglow", v.sunGlow).apply()
         }
 
     var wb: WbSettings
