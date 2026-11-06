@@ -6,9 +6,17 @@
 - v3: tap-to-focus box, on-screen exposure drag, AE/AF lock, 50MP toggle (Xiaomi limits apps to 12MP), iPhone-style styles screen
 - v4 (Round 1): LUT colour engine with Fuji sims tuned to reference photos (`tools/lut/`), .cube LUT import, Cherry Negative + Pacific Blue, Cinematic Gold on the new engine, soft glow (Pro-Mist), lens character (vignette, halation, corner softness), natural detail (phone edge sharpening off)
 
+- v5: Auto WB default + WB colour wheel (recipe WB optional), finer grain, ISO-adaptive noise reduction, Styles keep original grain
+- v6: cleaner UI (icon top bar, VIDEO·FUJI·STYLES·NORMAL mode bar, live-preview recipe cards, bottom sheets, haptics);
+  NORMAL mode (Natural/Phone base, tone sliders, Shadows/Midtones/Highlights wheels, presets); temporal video NR;
+  Xiaomi Night/HDR/Bokeh/Auto via CameraX extensions (when offered); lens colour matching + calibration; camera/RAW report;
+  screenshot-to-recipe (ML Kit OCR); highlight warning + histogram; re-edit gallery photos from clean originals
+
 ## Round 2 — next
 - RAW capture (if Xiaomi exposes RAW to apps): build colour from sensor data with our own pipeline
 - Clean mode: burst merge for lower noise + optional AI upscale (~24–48MP), off by default
+
+- Match Look: build a recipe/LUT from sample photos (colour transfer)
 
 ## Round 3 — video ideas
 - (user to add)
