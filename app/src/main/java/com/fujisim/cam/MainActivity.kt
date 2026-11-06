@@ -2,6 +2,7 @@ package com.fujisim.cam
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -14,8 +15,11 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.media.ExifInterface
 import android.media.ThumbnailUtils
 import android.net.Uri
@@ -26,9 +30,12 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.text.TextUtils
 import android.util.Size
 import android.view.Choreographer
 import android.view.GestureDetector
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.ScaleGestureDetector
@@ -47,6 +54,7 @@ import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
@@ -88,6 +96,14 @@ import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        const val FUJI = 0
+        const val STYLES = 1
+        const val NORMAL = 2
+        val FAMILY_NAMES = arrayOf("FUJI", "STYLES", "NORMAL")
+        const val YELLOW = "#FFC94A"
+    }
+
     // Views
     private lateinit var previewView: PreviewView
     private lateinit var grid: GridOverlay
@@ -98,18 +114,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var shutter: View
     private lateinit var thumb: ImageView
     private lateinit var flash: View
-    private lateinit var editorContainer: FrameLayout
+    private lateinit var editorContainer: LinearLayout
+    private lateinit var sheetContent: FrameLayout
     private lateinit var zoomBar: LinearLayout
     private lateinit var gridBtn: TextView
-    private lateinit var lookModeBtn: TextView
+    private lateinit var wbBtn: TextView
+    private lateinit var lensBtn: TextView
+    private lateinit var familyBtn: TextView
     private lateinit var logBtn: TextView
-    private lateinit var photoModeBtn: TextView
-    private lateinit var videoModeBtn: TextView
+    private lateinit var modeViews: List<TextView>
     private lateinit var processingOverlay: View
     private lateinit var processingText: TextView
     private lateinit var processingBar: ProgressBar
     private lateinit var focusOverlay: FocusOverlay
-    private lateinit var resBtn: TextView
     private lateinit var chipScroll: View
     private lateinit var stylesBar: View
     private lateinit var stylePad: StylePad
@@ -125,9 +142,11 @@ class MainActivity : AppCompatActivity() {
     private var recipes: List<Recipe> = emptyList()
     private lateinit var current: Recipe       // selected saved recipe
     private lateinit var live: Recipe          // on screen (may include unsaved edits)
-    private var stylesMode = false
+    private var family = FUJI
+    private val stylesMode get() = family == STYLES
     private var currentStyle = PhotoStyle.STANDARD
     private var styleLive = StyleSettings()
+    private var normal = NormalSettings()
     private var videoMode = false
     private var logMode = false
     private var hlgSupported = false
@@ -137,7 +156,11 @@ class MainActivity : AppCompatActivity() {
     private var lutNow: LutImage? = null
     private var lens = LensSettings()
     private var wb = WbSettings()
-    private lateinit var wbBtn: TextView
+
+    // Low-light: ISO bucket from the live camera results (0 bright .. 3 very dark)
+    @Volatile private var isoBucket = 0
+    private val isoDenoise get() = floatArrayOf(0.45f, 0.75f, 1.0f, 1.25f)[isoBucket]
+    private val isoTemporal get() = floatArrayOf(0.3f, 0.5f, 0.7f, 0.85f)[isoBucket]
 
     // Camera
     private var camera: Camera? = null
@@ -158,7 +181,9 @@ class MainActivity : AppCompatActivity() {
     private var lastMime = "image/jpeg"
     private val previewShader = FilmShader()
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val thumbExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val cardThumbs = HashMap<String, ImageView>()
 
     private val cameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -201,6 +226,23 @@ class MainActivity : AppCompatActivity() {
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
 
+    // Live camera results: ISO for adaptive noise reduction
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
+            val bucket = when {
+                iso <= 200 -> 0
+                iso <= 800 -> 1
+                iso <= 1600 -> 2
+                else -> 3
+            }
+            if (bucket != isoBucket) {
+                isoBucket = bucket
+                mainHandler.post { refreshLook() }
+            }
+        }
+    }
+
     // Moving grain in the viewfinder
     private var lastGrainFrame = 0L
     private val grainTicker = object : Choreographer.FrameCallback {
@@ -222,6 +264,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val thumbTicker = object : Runnable {
+        override fun run() {
+            refreshThumbnails()
+            mainHandler.postDelayed(this, 6000)
+        }
+    }
+
+    private val fadeInfo = Runnable { recipeInfo.animate().alpha(0f).setDuration(400).start() }
+
     // ------------------------------------------------------------------ Lifecycle
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -238,17 +289,19 @@ class MainActivity : AppCompatActivity() {
         thumb = findViewById(R.id.thumb)
         flash = findViewById(R.id.flash)
         editorContainer = findViewById(R.id.editorContainer)
+        sheetContent = findViewById(R.id.sheetContent)
         zoomBar = findViewById(R.id.zoomBar)
         gridBtn = findViewById(R.id.gridBtn)
-        lookModeBtn = findViewById(R.id.lookModeBtn)
+        wbBtn = findViewById(R.id.wbBtn)
+        lensBtn = findViewById(R.id.lensBtn)
+        familyBtn = findViewById(R.id.familyBtn)
         logBtn = findViewById(R.id.logBtn)
-        photoModeBtn = findViewById(R.id.photoModeBtn)
-        videoModeBtn = findViewById(R.id.videoModeBtn)
+        modeViews = listOf(findViewById(R.id.modeVideo), findViewById(R.id.modeFuji),
+            findViewById(R.id.modeStyles), findViewById(R.id.modeNormal))
         processingOverlay = findViewById(R.id.processingOverlay)
         processingText = findViewById(R.id.processingText)
         processingBar = findViewById(R.id.processingBar)
         focusOverlay = findViewById(R.id.focusOverlay)
-        resBtn = findViewById(R.id.resBtn)
         chipScroll = findViewById(R.id.chipScroll)
         stylesBar = findViewById(R.id.stylesBar)
         stylePad = findViewById(R.id.stylePad)
@@ -259,40 +312,43 @@ class MainActivity : AppCompatActivity() {
         styleDots = findViewById(R.id.styleDots)
 
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-        previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+        previewView.scaleType = PreviewView.ScaleType.FIT_START
 
         store = RecipeStore(this)
         prefs = AppPrefs(this)
         reloadRecipes()
         current = recipes.firstOrNull { it.id == store.selectedId } ?: recipes.first()
         live = current
-        stylesMode = prefs.stylesMode
+        family = prefs.family.coerceIn(0, 2)
         currentStyle = prefs.selectedStyle
         styleLive = prefs.styleSettings(currentStyle)
+        normal = prefs.normal
         grid.mode = GridOverlay.Mode.values().getOrElse(prefs.gridMode) { GridOverlay.Mode.OFF }
         highRes = prefs.highRes
         lens = prefs.lens
         wb = prefs.wb
-        wbBtn = findViewById(R.id.wbBtn)
-        wbBtn.setOnClickListener {
-            if (recording != null) return@setOnClickListener
-            if (editing) closeEditor() else openWbPanel()
-        }
-        // Warm the LUT cache off the main thread so switching recipes is instant.
+        // Warm the LUT cache off the main thread so switching looks is instant.
         Thread {
-            FilmSim.values().mapNotNull { it.lut }.forEach { LutLibrary.get(applicationContext, "asset:$it") }
+            (FilmSim.values().mapNotNull { it.lut } + "natural").forEach { LutLibrary.get(applicationContext, "asset:$it") }
         }.start()
-        setupStyleControls()
 
+        setupStyleControls()
+        setupTopBar()
+        setupModeBar()
+        setupSheet()
         rebuildChips()
         updateModeButtons()
 
         previewView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> refreshLook() }
 
-        shutter.setOnClickListener { if (videoMode) toggleRecording() else takePhoto() }
+        shutter.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            if (videoMode) toggleRecording() else takePhoto()
+        }
         findViewById<View>(R.id.editBtn).setOnClickListener { if (editing) closeEditor() else openEditor() }
         findViewById<View>(R.id.flipBtn).setOnClickListener {
             if (recording != null) return@setOnClickListener
+            it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK)
                 CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
             zoomRatio = 1f
@@ -300,44 +356,6 @@ class MainActivity : AppCompatActivity() {
             startCamera()
         }
         thumb.setOnClickListener { openLast() }
-        gridBtn.setOnClickListener {
-            val modes = GridOverlay.Mode.values()
-            grid.mode = modes[(grid.mode.ordinal + 1) % modes.size]
-            prefs.gridMode = grid.mode.ordinal
-            updateModeButtons()
-            updateLevelSensor()
-        }
-        lookModeBtn.setOnClickListener {
-            if (recording != null || editing) return@setOnClickListener
-            stylesMode = !stylesMode
-            prefs.stylesMode = stylesMode
-            lastCamKey = ""
-            rebuildChips()
-            updateModeButtons()
-            refreshLook()
-        }
-        resBtn.setOnClickListener {
-            if (recording != null) return@setOnClickListener
-            if (!highRes && maxPhotoMp in 1..19) {
-                Toast.makeText(this, "Xiaomi only gives apps up to ${maxPhotoMp}MP on this camera", Toast.LENGTH_LONG).show()
-                return@setOnClickListener
-            }
-            highRes = !highRes
-            prefs.highRes = highRes
-            startCamera()
-        }
-        findViewById<View>(R.id.lensBtn).setOnClickListener {
-            if (recording != null) return@setOnClickListener
-            if (editing) closeEditor() else openLensPanel()
-        }
-        logBtn.setOnClickListener {
-            if (recording != null) return@setOnClickListener
-            logMode = !logMode
-            updateModeButtons()
-            startCamera()
-        }
-        photoModeBtn.setOnClickListener { setVideoMode(false) }
-        videoModeBtn.setOnClickListener { setVideoMode(true) }
         setupCompareButton()
         setupPreviewGestures()
 
@@ -367,12 +385,14 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         updateLevelSensor()
         Choreographer.getInstance().postFrameCallback(grainTicker)
+        mainHandler.postDelayed(thumbTicker, 1500)
     }
 
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(gravityListener)
         Choreographer.getInstance().removeFrameCallback(grainTicker)
+        mainHandler.removeCallbacks(thumbTicker)
         if (recording != null) toggleRecording()
     }
 
@@ -384,6 +404,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+        thumbExecutor.shutdown()
     }
 
     private fun updateLevelSensor() {
@@ -394,6 +415,134 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    // ------------------------------------------------------------------ Top bar, mode bar, sheet
+
+    private fun setupTopBar() {
+        gridBtn.setOnClickListener {
+            val modes = GridOverlay.Mode.values()
+            grid.mode = modes[(grid.mode.ordinal + 1) % modes.size]
+            prefs.gridMode = grid.mode.ordinal
+            it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            showInfo(if (grid.mode == GridOverlay.Mode.OFF) "Grid off" else "Grid: ${grid.mode.label}")
+            updateModeButtons()
+            updateLevelSensor()
+        }
+        wbBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            if (editing) closeEditor() else openWbPanel()
+        }
+        lensBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            if (editing) closeEditor() else openLensPanel()
+        }
+        familyBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            setFamily((family + 1) % 3, keepVideo = true)
+        }
+        logBtn.setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            logMode = !logMode
+            updateModeButtons()
+            startCamera()
+        }
+        findViewById<View>(R.id.moreBtn).setOnClickListener {
+            if (recording != null) return@setOnClickListener
+            if (editing) closeEditor() else openSettings()
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupModeBar() {
+        // 0 = VIDEO, 1 = FUJI, 2 = STYLES, 3 = NORMAL
+        modeViews.forEachIndexed { i, v -> v.setOnClickListener { selectModeIndex(i) } }
+        val bar = findViewById<View>(R.id.modeBar)
+        val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                if (abs(velocityX) < abs(velocityY)) return false
+                val idx = currentModeIndex() + if (velocityX < 0) 1 else -1
+                if (idx in 0..3) selectModeIndex(idx)
+                return true
+            }
+        })
+        bar.setOnTouchListener { _, e -> detector.onTouchEvent(e); false }
+    }
+
+    private fun currentModeIndex() = if (videoMode) 0 else family + 1
+
+    private fun selectModeIndex(i: Int) {
+        if (recording != null || i == currentModeIndex()) return
+        modeViews[i].performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        if (editing) closeEditor()
+        if (i == 0) setVideoMode(true) else setFamily(i - 1, keepVideo = false)
+    }
+
+    private fun setFamily(f: Int, keepVideo: Boolean) {
+        family = f
+        prefs.family = f
+        lastCamKey = ""
+        if (!keepVideo && videoMode) {
+            setVideoMode(false)
+        }
+        rebuildChips()
+        syncStyleControls()
+        updateModeButtons()
+        refreshLook(showInfoPill = true)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupSheet() {
+        var startY = 0f
+        findViewById<View>(R.id.sheetHandle).setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> startY = e.rawY
+                MotionEvent.ACTION_MOVE -> editorContainer.translationY = max(0f, e.rawY - startY)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (e.rawY - startY > dp(90)) closeEditor()
+                    else editorContainer.animate().translationY(0f).setDuration(150).start()
+                }
+            }
+            true
+        }
+    }
+
+    private fun showSheet(content: View) {
+        editing = true
+        sheetContent.removeAllViews()
+        sheetContent.addView(content)
+        editorContainer.visibility = View.VISIBLE
+        editorContainer.translationY = dp(470).toFloat()
+        editorContainer.animate().translationY(0f).setDuration(220).start()
+    }
+
+    private fun showInfo(text: String) {
+        recipeInfo.text = text
+        mainHandler.removeCallbacks(fadeInfo)
+        recipeInfo.animate().cancel()
+        recipeInfo.alpha = 1f
+        mainHandler.postDelayed(fadeInfo, 2600)
+    }
+
+    private fun openSettings() {
+        val panel = SettingsPanel(this, highRes, maxPhotoMp,
+            onHighRes = { on ->
+                if (on && maxPhotoMp in 1..19) {
+                    Toast.makeText(this, "Xiaomi only gives apps up to ${maxPhotoMp}MP on this camera", Toast.LENGTH_LONG).show()
+                }
+                if (on != highRes) {
+                    highRes = on
+                    prefs.highRes = on
+                    if (!videoMode) startCamera()
+                }
+            },
+            extraRows = settingsExtraRows(),
+            onClose = { closeEditor() })
+        showSheet(panel.view)
+    }
+
+    /** Extra rows for the Settings sheet (filled in by later features). */
+    private fun settingsExtraRows(): List<View> = emptyList()
 
     // ------------------------------------------------------------------ Camera
 
@@ -407,6 +556,7 @@ class MainActivity : AppCompatActivity() {
         startCamera()
     }
 
+    @OptIn(ExperimentalCamera2Interop::class)
     private fun startCamera() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
         val future = ProcessCameraProvider.getInstance(this)
@@ -417,9 +567,10 @@ class MainActivity : AppCompatActivity() {
             else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
             grid.imageAspect = if (videoMode) 9f / 16f else 3f / 4f
 
-            val preview = Preview.Builder()
+            val previewBuilder = Preview.Builder()
                 .setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build())
-                .build()
+            Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(captureCallback)
+            val preview = previewBuilder.build()
             preview.setSurfaceProvider(previewView.surfaceProvider)
 
             val useCase: UseCase
@@ -468,7 +619,6 @@ class MainActivity : AppCompatActivity() {
                 provider.unbindAll()
                 camera = provider.bindToLifecycle(this, selector, preview, useCase)
             } catch (e: Exception) {
-                // Fallback: e.g. HLG combo not supported — retry with standard video.
                 if (videoMode && logMode) {
                     try {
                         val vc = VideoCapture.Builder(
@@ -556,7 +706,6 @@ class MainActivity : AppCompatActivity() {
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode)
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
             if (lens.naturalDetail && edgeOffSupported) {
-                // Skip the phone's edge sharpening for a natural, camera-like look.
                 opts.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
             }
             Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(opts.build())
@@ -597,6 +746,7 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
                 setPadding(dp(10), dp(6), dp(10), dp(6))
                 setOnClickListener {
+                    it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     zoomRatio = z
                     camera?.cameraControl?.setZoomRatio(z)
                 }
@@ -627,7 +777,7 @@ class MainActivity : AppCompatActivity() {
             val active = v == nearest
             v.setTextColor(if (active) Color.BLACK else Color.WHITE)
             v.background = if (active) GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat(); setColor(Color.parseColor("#FFC94A"))
+                cornerRadius = dp(14).toFloat(); setColor(Color.parseColor(YELLOW))
             } else null
             v.text = if (active && best > 0.05f) formatZoom(current) else formatZoom(z)
         }
@@ -641,7 +791,7 @@ class MainActivity : AppCompatActivity() {
         aeLocked = false
         reapplyCameraSettings()
         if (lock) {
-            // Let metering settle on the new spot, then freeze exposure too.
+            previewView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             mainHandler.postDelayed({
                 aeLocked = true
                 reapplyCameraSettings()
@@ -669,13 +819,14 @@ class MainActivity : AppCompatActivity() {
             override fun onDown(e: MotionEvent): Boolean = true
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (editing) { closeEditor(); return true }
                 if (!scaling) focusAt(e.x, e.y, lock = false)
                 return true
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 resetFocus()
-                Toast.makeText(this@MainActivity, "Auto focus & exposure", Toast.LENGTH_SHORT).show()
+                showInfo("Auto focus & exposure")
                 return true
             }
 
@@ -689,7 +840,6 @@ class MainActivity : AppCompatActivity() {
                 val dy = e2.y - e1.y
                 if (dragEv || (abs(dy) > abs(dx) * 1.3f && abs(dy) > dp(12))) {
                     dragEv = true
-                    // drag up = brighter; full screen height ≈ 4 EV
                     userEv = (userEv + distanceY / previewView.height * 4f).coerceIn(-2f, 2f)
                     val snapped = (userEv * 10f).roundToInt() / 10f
                     focusOverlay.setEv(snapped)
@@ -719,28 +869,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Swipe on the viewfinder: next/previous style (or recipe in Fuji mode). */
+    /** Swipe on the viewfinder: next/previous recipe, style or preset. */
     private fun stepLook(dir: Int) {
-        if (stylesMode) {
-            val all = PhotoStyle.values()
-            val next = all[(currentStyle.ordinal + dir + all.size) % all.size]
-            selectStyle(next)
-        } else {
-            val i = recipes.indexOfFirst { it.id == current.id }
-            val r = recipes[(i + dir + recipes.size) % recipes.size]
-            current = r
-            live = r
-            store.selectedId = r.id
-            rebuildChips()
-            refreshLook()
+        previewView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        when (family) {
+            STYLES -> {
+                val all = PhotoStyle.values()
+                selectStyle(all[(currentStyle.ordinal + dir + all.size) % all.size])
+            }
+            NORMAL -> {
+                val all = listOf(NormalPreset("Default", NormalSettings())) + prefs.normalPresets
+                val i = all.indexOfFirst { it.settings == normal }
+                val next = all[((if (i < 0) 0 else i) + dir + all.size) % all.size]
+                selectNormal(next.settings, next.name)
+            }
+            else -> {
+                val i = recipes.indexOfFirst { it.id == current.id }
+                selectRecipe(recipes[(i + dir + recipes.size) % recipes.size])
+            }
         }
+    }
+
+    private fun selectRecipe(r: Recipe) {
+        current = r
+        live = r
+        store.selectedId = r.id
+        rebuildChips()
+        refreshLook(showInfoPill = true)
+    }
+
+    private fun selectNormal(s: NormalSettings, name: String) {
+        normal = s
+        prefs.normal = s
+        rebuildChips()
+        refreshLook()
+        showInfo("$name\n${s.summary()}")
     }
 
     private fun selectStyle(st: PhotoStyle) {
         currentStyle = st
         prefs.selectedStyle = st
         styleLive = prefs.styleSettings(st)
-        rebuildChips()
         syncStyleControls()
         refreshLook()
     }
@@ -764,7 +933,6 @@ class MainActivity : AppCompatActivity() {
         syncStyleControls()
     }
 
-    /** Push the current style's colours/values into the on-screen pad, slider and labels. */
     private fun syncStyleControls() {
         val accent = Color.parseColor(currentStyle.accentHex)
         stylePad.accent = accent
@@ -788,25 +956,43 @@ class MainActivity : AppCompatActivity() {
         recipes = store.loadCustom() + BuiltIns.list
     }
 
-    /** Rebuild the current look from the recipe/style on screen and push it everywhere. */
-    private fun refreshLook() {
-        recipeInfo.visibility = if (stylesMode) View.GONE else View.VISIBLE
-        if (stylesMode) {
-            lookNow = Look.fromStyle(currentStyle, styleLive)
-            applyCameraSettings(CaptureRequest.CONTROL_AWB_MODE_AUTO, 0f)
-            recipeInfo.text = "${currentStyle.label} style\n" + styleSummary(styleLive)
-        } else {
+    /** Build the look for the current family (without lens/WB-wheel/ISO extras). */
+    private fun baseLook(): Pair<Look, Pair<Int, Float>> = when (family) {
+        STYLES -> Look.fromStyle(currentStyle, styleLive) to (CaptureRequest.CONTROL_AWB_MODE_AUTO to 0f)
+        NORMAL -> Look.fromNormal(normal) to (CaptureRequest.CONTROL_AWB_MODE_AUTO to 0f)
+        else -> {
             val plan = WhiteBalance.plan(live, awbModes, wb.useRecipe)
-            lookNow = Look.fromRecipe(live, plan.gains)
-            applyCameraSettings(plan.awbMode, live.ev)
-            val credit = if (live.credit.isNotBlank()) "  ·  by ${live.credit}" else ""
-            recipeInfo.text = "${live.name}$credit\n${live.summary()}"
+            Look.fromRecipe(live, plan.gains) to (plan.awbMode to live.ev)
         }
+    }
+
+    private fun finishLook(base: Look): Look {
         val tint = WbWheel.gains(wb.wheelX, wb.wheelY)
-        lookNow = lookNow.withLens(lens).let { lk -> lk.copy(wb = FloatArray(3) { lk.wb[it] * tint[it] }) }
-        wbBtn.text = if (wb.useRecipe) "WB REC" else "WB AUTO"
-        wbBtn.setTextColor(if (wb.wheelX != 0f || wb.wheelY != 0f) Color.parseColor("#FFC94A") else Color.WHITE)
+        var lk = base.withLens(lens).let { it.copy(wb = FloatArray(3) { i -> it.wb[i] * tint[i] }) }
+        if (lk.denoise > 0f) lk = lk.copy(denoise = isoDenoise)
+        return lk
+    }
+
+    /** Rebuild the current look and push it everywhere. */
+    private fun refreshLook(showInfoPill: Boolean = false) {
+        val (base, cam) = baseLook()
+        applyCameraSettings(cam.first, cam.second)
+        lookNow = finishLook(base)
         lutNow = LutLibrary.get(this, lookNow.lut)
+        wbBtn.text = if (wb.useRecipe && family == FUJI) "WB·R" else "WB"
+        wbBtn.setTextColor(if (wb.wheelX != 0f || wb.wheelY != 0f || (wb.useRecipe && family == FUJI)) Color.parseColor(YELLOW) else Color.WHITE)
+        val lensOn = lens.mist > 0f || lens.vignette > 0f || lens.halation > 0f || lens.cornerSoft > 0f
+        lensBtn.setTextColor(if (lensOn) Color.parseColor(YELLOW) else Color.WHITE)
+        if (showInfoPill) {
+            when (family) {
+                FUJI -> {
+                    val credit = if (live.credit.isNotBlank()) "  ·  by ${live.credit}" else ""
+                    showInfo("${live.name}$credit\n${live.summary()}")
+                }
+                NORMAL -> showInfo("NORMAL\n${normal.summary()}")
+                else -> {}
+            }
+        }
         pushPreviewShader(SystemClock.elapsedRealtime() / 1000f)
     }
 
@@ -825,63 +1011,138 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
 
-    private fun chip(label: String, selected: Boolean, onClick: () -> Unit, onLong: () -> Unit): TextView =
-        TextView(this).apply {
-            text = label
-            textSize = 13f
-            setTextColor(if (selected) Color.BLACK else Color.WHITE)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(16).toFloat()
-                setColor(if (selected) Color.parseColor("#FFC94A") else Color.parseColor("#2A2A2A"))
-            }
-            setOnClickListener { if (!editing && recording == null) onClick() }
-            setOnLongClickListener {
-                if (!editing && recording == null) { onClick(); openEditor() }
-                true
-            }
+    // ------------------------------------------------------------------ Carousel
+
+    /** A look card: small live preview thumbnail + name. */
+    private fun card(key: String?, label: String, selected: Boolean, onClick: () -> Unit, onLong: (() -> Unit)?): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(4), 0, dp(4), 0)
         }
+        val img = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(Color.parseColor("#262626"))
+                if (selected) setStroke(dp(2), Color.parseColor(YELLOW))
+            }
+            clipToOutline = true
+            if (selected) setPadding(dp(2), dp(2), dp(2), dp(2))
+        }
+        box.addView(img, LinearLayout.LayoutParams(dp(66), dp(50)))
+        if (key == null) {
+            img.setImageDrawable(null)
+            box.addView(TextView(this).apply {
+                text = "+"
+                setTextColor(Color.WHITE); textSize = 20f; gravity = Gravity.CENTER
+            }.also { (img.parent as LinearLayout).removeView(img) }, LinearLayout.LayoutParams(dp(66), dp(50)).apply { })
+            box.getChildAt(0).background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat(); setStroke(dp(1), Color.parseColor("#666666"))
+            }
+        } else {
+            cardThumbs[key] = img
+        }
+        box.addView(TextView(this).apply {
+            text = label
+            textSize = 11f
+            setTextColor(if (selected) Color.parseColor(YELLOW) else Color.parseColor("#DDDDDD"))
+            maxWidth = dp(84)
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, 0)
+        })
+        box.setOnClickListener {
+            if (editing || recording != null) return@setOnClickListener
+            it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onClick()
+        }
+        if (onLong != null) box.setOnLongClickListener {
+            if (!editing && recording == null) onLong()
+            true
+        }
+        return box
+    }
 
     private fun rebuildChips() {
         recipeBar.removeAllViews()
-        val lp = { LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(8) } }
-        if (stylesMode) {
-            for (st in PhotoStyle.values()) {
-                recipeBar.addView(chip(st.label, st == currentStyle, { selectStyle(st) }, {}), lp())
+        cardThumbs.clear()
+        when (family) {
+            FUJI -> for (r in recipes) {
+                recipeBar.addView(card(r.id, if (r.builtIn) r.name else "★ ${r.name}", r.id == current.id,
+                    { if (r.id == current.id) refreshLook(showInfoPill = true) else selectRecipe(r) },
+                    { selectRecipe(r); openEditor() }))
             }
-        } else {
-            for (r in recipes) {
-                recipeBar.addView(chip(if (r.builtIn) r.name else "★ ${r.name}", r.id == current.id, {
-                    current = r
-                    live = r
-                    store.selectedId = r.id
-                    rebuildChips()
-                    refreshLook()
-                }, {}), lp())
+            NORMAL -> {
+                val presets = listOf(NormalPreset("Default", NormalSettings())) + prefs.normalPresets
+                presets.forEachIndexed { idx, p ->
+                    recipeBar.addView(card("preset:$idx", p.name, p.settings == normal,
+                        { selectNormal(p.settings, p.name) },
+                        if (idx == 0) null else { { confirmDeletePreset(p) } }))
+                }
+                recipeBar.addView(card(null, "Adjust", false, { openEditor() }, null))
+            }
+            else -> {}
+        }
+        mainHandler.postDelayed({ refreshThumbnails() }, 300)
+    }
+
+    private fun confirmDeletePreset(p: NormalPreset) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete \"${p.name}\"?")
+            .setPositiveButton("Delete") { _, _ ->
+                prefs.normalPresets = prefs.normalPresets.filter { it != p }
+                rebuildChips()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Render each card's thumbnail from the current camera frame with that card's look. */
+    private fun refreshThumbnails() {
+        if (recording != null || cardThumbs.isEmpty() || isFinishing || family == STYLES) return
+        val frame = runCatching { previewView.bitmap }.getOrNull() ?: return
+        val imgH = (frame.width / grid.imageAspect).roundToInt().coerceAtMost(frame.height)
+        val cropped = Bitmap.createBitmap(frame, 0, 0, frame.width, imgH.coerceAtLeast(1))
+        val small = Bitmap.createScaledBitmap(cropped, 132, (132f * cropped.height / cropped.width).roundToInt().coerceAtLeast(1), true)
+        val jobs: List<Pair<String, Look>> = when (family) {
+            FUJI -> recipes.map { r -> r.id to Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, wb.useRecipe).gains).copy(grain = 0f) }
+            NORMAL -> (listOf(NormalSettings()) + prefs.normalPresets.map { it.settings })
+                .mapIndexed { i, s -> "preset:$i" to Look.fromNormal(s) }
+            else -> emptyList()
+        }
+        val ctx = applicationContext
+        thumbExecutor.execute {
+            for ((key, look) in jobs) {
+                val out = runCatching {
+                    FilmShader.process(small, look, LutLibrary.get(ctx, look.lut), 0.15f)
+                }.getOrNull() ?: continue
+                runOnUiThread { cardThumbs[key]?.setImageBitmap(out) }
             }
         }
     }
 
     private fun updateModeButtons() {
-        lookModeBtn.text = if (stylesMode) "STYLES" else "FUJI"
-        gridBtn.text = grid.mode.label
-        photoModeBtn.setTextColor(if (!videoMode) Color.parseColor("#FFC94A") else Color.WHITE)
-        videoModeBtn.setTextColor(if (videoMode) Color.parseColor("#FFC94A") else Color.WHITE)
-        logBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
-        resBtn.visibility = if (videoMode) View.GONE else View.VISIBLE
-        resBtn.text = if (highRes) "${if (maxPhotoMp > 0) maxPhotoMp else 50}MP" else "12MP"
-        resBtn.setTextColor(if (highRes) Color.parseColor("#FFC94A") else Color.WHITE)
-        chipScroll.visibility = if (stylesMode) View.GONE else View.VISIBLE
-        stylesBar.visibility = if (stylesMode) View.VISIBLE else View.GONE
-        styleCategory.visibility = if (stylesMode) View.VISIBLE else View.GONE
-        styleNameBox.visibility = if (stylesMode) View.VISIBLE else View.GONE
-        if (stylesMode) syncStyleControls()
-        logBtn.text = when {
-            !logMode -> "LOG off"
-            hlgSupported -> "LOG 10-bit"
-            else -> "LOG (std)"
+        val idx = currentModeIndex()
+        modeViews.forEachIndexed { i, v ->
+            v.setTextColor(if (i == idx) Color.parseColor(YELLOW) else Color.parseColor("#BBBBBB"))
         }
-        logBtn.setTextColor(if (logMode) Color.parseColor("#FFC94A") else Color.WHITE)
+        gridBtn.setTextColor(if (grid.mode != GridOverlay.Mode.OFF) Color.parseColor(YELLOW) else Color.WHITE)
+        familyBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
+        familyBtn.text = "${FAMILY_NAMES[family]} ▾"
+        logBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
+        logBtn.text = when {
+            !logMode -> "LOG"
+            hlgSupported -> "LOG 10b"
+            else -> "LOG std"
+        }
+        logBtn.setTextColor(if (logMode) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
+        chipScroll.visibility = if (family == STYLES) View.GONE else View.VISIBLE
+        stylesBar.visibility = if (family == STYLES) View.VISIBLE else View.GONE
+        styleCategory.visibility = if (family == STYLES && recording == null) View.VISIBLE else View.GONE
+        styleNameBox.visibility = if (family == STYLES) View.VISIBLE else View.GONE
+        if (family == STYLES) syncStyleControls()
         shutter.setBackgroundResource(
             when {
                 recording != null -> R.drawable.shutter_recording
@@ -891,33 +1152,42 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    // ------------------------------------------------------------------ Panels
+
     private fun openEditor() {
         if (recording != null) return
-        editing = true
-        val view = if (stylesMode) {
-            StylePanel(this, currentStyle, styleLive,
+        val view = when (family) {
+            STYLES -> StylePanel(this, currentStyle, styleLive,
                 onChange = { s ->
                     styleLive = s
                     prefs.saveStyleSettings(currentStyle, s)
                     refreshLook()
                 },
                 onClose = { closeEditor() }).view
-        } else {
-            EditorPanel(this, current,
+            NORMAL -> AdjustPanel(this, normal,
+                onChange = { s ->
+                    normal = s
+                    prefs.normal = s
+                    refreshLook()
+                },
+                onSavePreset = { name, s ->
+                    prefs.normalPresets = prefs.normalPresets + NormalPreset(name, s)
+                    Toast.makeText(this, "Saved preset \"$name\"", Toast.LENGTH_SHORT).show()
+                    rebuildChips()
+                },
+                onClose = { closeEditor() }).view
+            else -> EditorPanel(this, current,
                 onChange = { live = it; refreshLook() },
                 onSave = { r, asNew -> saveRecipe(r, asNew) },
                 onDelete = { deleteRecipe(it) },
                 onClose = { closeEditor() },
                 onImportLut = { importLut.launch(arrayOf("*/*")) }).view
         }
-        editorContainer.removeAllViews()
-        editorContainer.addView(view)
-        editorContainer.visibility = View.VISIBLE
+        showSheet(view)
     }
 
     private fun openWbPanel() {
         if (recording != null) return
-        editing = true
         val panel = WbPanel(this, wb,
             onChange = {
                 wb = it
@@ -926,14 +1196,11 @@ class MainActivity : AppCompatActivity() {
                 refreshLook()
             },
             onClose = { closeEditor() })
-        editorContainer.removeAllViews()
-        editorContainer.addView(panel.view)
-        editorContainer.visibility = View.VISIBLE
+        showSheet(panel.view)
     }
 
     private fun openLensPanel() {
         if (recording != null) return
-        editing = true
         val panel = LensPanel(this, lens,
             onChange = {
                 lens = it
@@ -942,9 +1209,7 @@ class MainActivity : AppCompatActivity() {
                 refreshLook()
             },
             onClose = { closeEditor() })
-        editorContainer.removeAllViews()
-        editorContainer.addView(panel.view)
-        editorContainer.visibility = View.VISIBLE
+        showSheet(panel.view)
     }
 
     private fun importLutFrom(uri: Uri) {
@@ -965,11 +1230,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun closeEditor() {
         editing = false
-        editorContainer.visibility = View.GONE
-        editorContainer.removeAllViews()
-        if (!stylesMode) live = current else {
-            styleLive = prefs.styleSettings(currentStyle)
-            syncStyleControls()
+        editorContainer.animate().translationY(dp(470).toFloat()).setDuration(180).withEndAction {
+            if (!editing) {
+                editorContainer.visibility = View.GONE
+                sheetContent.removeAllViews()
+                editorContainer.translationY = 0f
+            }
+        }.start()
+        when (family) {
+            FUJI -> live = current
+            STYLES -> { styleLive = prefs.styleSettings(currentStyle); syncStyleControls() }
+            else -> { normal = prefs.normal; rebuildChips() }
         }
         refreshLook()
     }
@@ -1028,8 +1299,8 @@ class MainActivity : AppCompatActivity() {
 
         val look = lookNow
         val lut = lutNow
-        val name = if (stylesMode) "${currentStyle.label} style" else live.name
-        val desc = if (stylesMode) styleSummary(styleLive) else live.summary()
+        val name = when (family) { STYLES -> "${currentStyle.label} style"; NORMAL -> "Normal"; else -> live.name }
+        val desc = when (family) { STYLES -> styleSummary(styleLive); NORMAL -> normal.summary(); else -> live.summary() }
         val previewWidth = previewView.width.coerceAtLeast(1)
 
         capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
@@ -1120,6 +1391,7 @@ class MainActivity : AppCompatActivity() {
         val raw = File(cacheDir, "raw_${timestamp()}.mp4")
         val look = lookNow
         val lut = lutNow
+        val temporal = isoTemporal
         var pending = vc.output.prepareRecording(this, FileOutputOptions.Builder(raw).build())
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             pending = pending.withAudioEnabled()
@@ -1136,7 +1408,7 @@ class MainActivity : AppCompatActivity() {
                     recording = null
                     updateModeButtons()
                     if (raw.exists() && raw.length() > 0) {
-                        styleVideo(raw, look, lut)
+                        styleVideo(raw, look, lut, temporal)
                     } else {
                         Toast.makeText(this, "Recording failed (error ${event.error})", Toast.LENGTH_LONG).show()
                     }
@@ -1147,12 +1419,12 @@ class MainActivity : AppCompatActivity() {
         updateModeButtons()
     }
 
-    private fun styleVideo(raw: File, look: Look, lut: LutImage?) {
+    private fun styleVideo(raw: File, look: Look, lut: LutImage?, temporal: Float) {
         val styled = File(cacheDir, "styled_${timestamp()}.mp4")
         processingOverlay.visibility = View.VISIBLE
         processingBar.progress = 0
         processingText.text = "Applying look to video… 0%"
-        VideoStyler.style(this, raw, styled, look, lut,
+        VideoStyler.style(this, raw, styled, look, lut, temporal,
             onProgress = { p ->
                 processingBar.progress = p
                 processingText.text = "Applying look to video… $p%"

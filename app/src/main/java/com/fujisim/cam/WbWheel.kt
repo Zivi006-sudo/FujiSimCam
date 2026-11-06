@@ -33,9 +33,12 @@ class WbWheel(context: Context) : View(context) {
         style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK
     }
 
+    /** Height as a fraction of width (0.62 for the big WB wheel, ~0.95 for small grading wheels). */
+    var heightRatio = 0.62f
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
-        val side = (w * 0.62f).toInt()
+        val side = (w * heightRatio).toInt()
         setMeasuredDimension(w, side)
     }
 

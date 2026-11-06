@@ -75,6 +75,52 @@ data class LensSettings(
     val naturalDetail: Boolean = true,
 )
 
+/** NORMAL mode settings: base + tone sliders + 3-way colour grading. Ranges are -1..1 unless noted. */
+data class NormalSettings(
+    val naturalBase: Boolean = true,
+    val exposure: Float = 0f,     // EV, -2..2
+    val contrast: Float = 0f,
+    val highlights: Float = 0f,
+    val shadows: Float = 0f,
+    val saturation: Float = 0f,
+    val vibrance: Float = 0f,
+    val sx: Float = 0f, val sy: Float = 0f, val sl: Float = 0f,
+    val mx: Float = 0f, val my: Float = 0f, val ml: Float = 0f,
+    val hx: Float = 0f, val hy: Float = 0f, val hl: Float = 0f,
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("naturalBase", naturalBase)
+        listOf("exposure" to exposure, "contrast" to contrast, "highlights" to highlights, "shadows" to shadows,
+            "saturation" to saturation, "vibrance" to vibrance, "sx" to sx, "sy" to sy, "sl" to sl,
+            "mx" to mx, "my" to my, "ml" to ml, "hx" to hx, "hy" to hy, "hl" to hl
+        ).forEach { (k, v) -> put(k, v.toDouble()) }
+    }
+
+    fun summary(): String {
+        fun s(v: Float) = (if (v > 0) "+" else "") + (v * 100).toInt()
+        val parts = mutableListOf(if (naturalBase) "Natural base" else "Phone base")
+        if (exposure != 0f) parts += String.format("EV %+.1f", exposure)
+        if (contrast != 0f) parts += "Contrast ${s(contrast)}"
+        if (highlights != 0f) parts += "Highlights ${s(highlights)}"
+        if (shadows != 0f) parts += "Shadows ${s(shadows)}"
+        if (saturation != 0f) parts += "Saturation ${s(saturation)}"
+        if (vibrance != 0f) parts += "Vibrance ${s(vibrance)}"
+        if (sx != 0f || sy != 0f || sl != 0f || mx != 0f || my != 0f || ml != 0f || hx != 0f || hy != 0f || hl != 0f) parts += "Colour graded"
+        return parts.joinToString(" · ")
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject): NormalSettings {
+            fun f(k: String) = o.optDouble(k, 0.0).toFloat()
+            return NormalSettings(o.optBoolean("naturalBase", true), f("exposure"), f("contrast"), f("highlights"),
+                f("shadows"), f("saturation"), f("vibrance"), f("sx"), f("sy"), f("sl"), f("mx"), f("my"), f("ml"),
+                f("hx"), f("hy"), f("hl"))
+        }
+    }
+}
+
+data class NormalPreset(val name: String, val settings: NormalSettings)
+
 /** White balance: camera Auto (default) or the recipe's fixed WB, plus a colour-wheel tint. */
 data class WbSettings(val useRecipe: Boolean = false, val wheelX: Float = 0f, val wheelY: Float = 0f)
 
@@ -126,6 +172,30 @@ class AppPrefs(ctx: Context) {
         set(v) {
             prefs.edit().putBoolean("wb_recipe", v.useRecipe).putFloat("wb_x", v.wheelX).putFloat("wb_y", v.wheelY).apply()
         }
+
+    var normal: NormalSettings
+        get() = prefs.getString("normal", null)?.let { runCatching { NormalSettings.fromJson(JSONObject(it)) }.getOrNull() }
+            ?: NormalSettings()
+        set(v) { prefs.edit().putString("normal", v.toJson().toString()).apply() }
+
+    var normalPresets: List<NormalPreset>
+        get() = runCatching {
+            val arr = org.json.JSONArray(prefs.getString("normalPresets", "[]"))
+            (0 until arr.length()).map {
+                val o = arr.getJSONObject(it)
+                NormalPreset(o.getString("name"), NormalSettings.fromJson(o.getJSONObject("s")))
+            }
+        }.getOrDefault(emptyList())
+        set(v) {
+            val arr = org.json.JSONArray()
+            v.forEach { arr.put(JSONObject().put("name", it.name).put("s", it.settings.toJson())) }
+            prefs.edit().putString("normalPresets", arr.toString()).apply()
+        }
+
+    /** Look family: 0 = Fuji, 1 = Styles, 2 = Normal. */
+    var family: Int
+        get() = prefs.getInt("family", if (prefs.getBoolean("stylesMode", false)) 1 else 0)
+        set(v) { prefs.edit().putInt("family", v).apply() }
 
     var gridMode: Int
         get() = prefs.getInt("gridMode", 0)

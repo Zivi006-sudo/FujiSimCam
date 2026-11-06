@@ -31,7 +31,12 @@ import kotlin.math.min
 
 /** GLSL backend of the colour engine, run on every video frame by Media3. */
 @OptIn(UnstableApi::class)
-class FilmGlProgram(private val look: Look, private val lutImage: LutImage?, useHdr: Boolean) : BaseGlShaderProgram(useHdr, 1) {
+class FilmGlProgram(
+    private val look: Look,
+    private val lutImage: LutImage?,
+    useHdr: Boolean,
+    private val temporal: Float = 0f,
+) : BaseGlShaderProgram(useHdr, 1) {
     private val program: GlProgram = try {
         GlProgram(Shaders.VERTEX_GL, Shaders.FRAGMENT_GL)
     } catch (e: GlUtil.GlException) {
@@ -62,9 +67,25 @@ class FilmGlProgram(private val look: Look, private val lutImage: LutImage?, use
         )
     }
 
+    private var prevTex = 0
+    private var havePrev = false
+    private var temporalOk = true
+
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
         width = inputWidth.toFloat()
         height = inputHeight.toFloat()
+        if (temporal > 0f && prevTex == 0) {
+            val ids = IntArray(1)
+            GLES20.glGenTextures(1, ids, 0)
+            prevTex = ids[0]
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, prevTex)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, inputWidth, inputHeight, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+        }
         return Size(inputWidth, inputHeight)
     }
 
@@ -80,8 +101,19 @@ class FilmGlProgram(private val look: Look, private val lutImage: LutImage?, use
             set("uTime", floatArrayOf(presentationTimeUs / 1_000_000f))
             for ((name, v) in look.uniforms(1f)) set(name, v)
             if (lutImage == null) set("uLutMix", floatArrayOf(0f))
+            val useTemporal = temporal > 0f && havePrev && temporalOk
+            if (prevTex != 0) {
+                try { program.setSamplerTexIdUniform("uPrev", prevTex, 2) } catch (e: RuntimeException) { }
+            }
+            set("uTemporal", floatArrayOf(if (useTemporal) temporal else 0f))
             program.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            if (temporal > 0f && prevTex != 0 && temporalOk) {
+                // Keep this output for the next frame's temporal noise reduction.
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, prevTex)
+                GLES20.glCopyTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, 0, 0, width.toInt(), height.toInt())
+                if (GLES20.glGetError() != GLES20.GL_NO_ERROR) temporalOk = false else havePrev = true
+            }
         } catch (e: GlUtil.GlException) {
             throw VideoFrameProcessingException(e, presentationTimeUs)
         }
@@ -98,6 +130,7 @@ class FilmGlProgram(private val look: Look, private val lutImage: LutImage?, use
     override fun release() {
         super.release()
         GLES20.glDeleteTextures(1, intArrayOf(lutTex), 0)
+        if (prevTex != 0) GLES20.glDeleteTextures(1, intArrayOf(prevTex), 0)
         try {
             program.delete()
         } catch (e: GlUtil.GlException) {
@@ -115,10 +148,11 @@ object VideoStyler {
         output: File,
         look: Look,
         lutImage: LutImage?,
+        temporal: Float,
         onProgress: (Int) -> Unit,
         onDone: (Throwable?) -> Unit,
     ) {
-        val effect = GlEffect { _, useHdr -> FilmGlProgram(look, lutImage, useHdr) }
+        val effect = GlEffect { _, useHdr -> FilmGlProgram(look, lutImage, useHdr, temporal) }
         val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(input)))
             .setEffects(Effects(emptyList(), listOf(effect)))
             .build()

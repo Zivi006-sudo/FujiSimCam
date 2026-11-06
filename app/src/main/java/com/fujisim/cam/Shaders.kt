@@ -47,6 +47,11 @@ uniform float uHalation;
 uniform float uCornerSoft;
 uniform float uDenoise;
 uniform float uFineGrain;
+uniform float uVibrance;
+uniform vec3 uTintS;
+uniform vec3 uTintM;
+uniform vec3 uTintH;
+uniform vec3 uLumSMH;
 """
 
     private const val CORE = """
@@ -123,7 +128,7 @@ vec3 grade(vec3 orig, vec2 p) {
 
     // Light noise reduction: smooth colour noise strongly, luminance gently, but only across similar tones
     if (uDenoise > 0.0) {
-        float od = 1.25 * s;
+        float od = (1.0 + 0.6 * uDenoise) * s;
         vec3 n0 = src(p + vec2(od, 0.0));
         vec3 n1 = src(p - vec2(od, 0.0));
         vec3 n2 = src(p + vec2(0.0, od));
@@ -136,8 +141,8 @@ vec3 grade(vec3 orig, vec2 p) {
         vec3 chromaAvg = ((c - vec3(L0)) + (n0 - vec3(l0)) * w0 + (n1 - vec3(l1)) * w1 +
                           (n2 - vec3(l2)) * w2 + (n3 - vec3(l3)) * w3) / wsum;
         float lAvg = (L0 + l0 * w0 + l1 * w1 + l2 * w2 + l3 * w3) / wsum;
-        float Ln = mix(L0, lAvg, 0.35 * uDenoise);
-        c = vec3(Ln) + mix(c - vec3(L0), chromaAvg, uDenoise);
+        float Ln = mix(L0, lAvg, 0.4 * min(uDenoise, 1.25));
+        c = vec3(Ln) + mix(c - vec3(L0), chromaAvg, min(uDenoise, 1.0));
     }
 
     // Sharpness / detail
@@ -217,6 +222,17 @@ vec3 grade(vec3 orig, vec2 p) {
     c = vec3(L) + (c - vec3(L)) * (uSat * bandSat);
     c += vec3(bandLum * chroma);
 
+    // Vibrance: boost dull colours more than strong ones, protect skin tones
+    if (uVibrance != 0.0) {
+        float cmax = max(c.r, max(c.g, c.b));
+        float cmin = min(c.r, min(c.g, c.b));
+        float satNow = (cmax - cmin) / max(cmax, 1e-4);
+        float skin = bandW(h, 0.07) * smoothstep(0.1, 0.5, satNow);
+        float amt = uVibrance * (1.0 - satNow) * (1.0 - 0.7 * skin);
+        float Lv = dot(c, LUMA);
+        c = vec3(Lv) + (c - vec3(Lv)) * (1.0 + amt);
+    }
+
     // Color Chrome Effect / FX Blue
     float cc = chroma * chroma * smoothstep(0.15, 0.6, L);
     c *= 1.0 - uChrome * 0.2 * cc;
@@ -233,6 +249,13 @@ vec3 grade(vec3 orig, vec2 p) {
     float Lt = dot(c, LUMA);
     c += uShadowTint * (1.0 - smoothstep(0.0, 0.5, Lt)) + uHighTint * smoothstep(0.45, 1.0, Lt);
     c += uWarmth * smoothstep(0.35, 1.0, Lt) * vec3(0.075, 0.03, -0.065);
+
+    // Colour grading wheels: Shadows / Midtones / Highlights (colour + brightness)
+    float gwS = pow(1.0 - smoothstep(0.0, 0.55, Lt), 1.5);
+    float gwH = smoothstep(0.45, 1.0, Lt);
+    float gwM = max(0.0, 1.0 - gwS - gwH);
+    c += uTintS * gwS + uTintM * gwM + uTintH * gwH;
+    c += vec3(uLumSMH.x * gwS + uLumSMH.y * gwM + uLumSMH.z * gwH) * 0.18;
 
     // Glow, tinted warm like film halation
     c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55);
@@ -307,6 +330,8 @@ void main() {
 precision highp float;
 uniform sampler2D uTexSampler;
 uniform sampler2D uLut;
+uniform sampler2D uPrev;
+uniform float uTemporal;
 varying vec2 vTexSamplingCoord;
 """ + UNIFORMS + """
 vec3 lutFetch(vec2 px) {
@@ -320,7 +345,15 @@ vec3 src(vec2 p) {
 void main() {
     vec2 p = vTexSamplingCoord * uSize;
     vec3 o = texture2D(uTexSampler, vTexSamplingCoord).rgb;
-    gl_FragColor = vec4(grade(o, p), 1.0);
+    vec3 g = grade(o, p);
+    // Temporal noise reduction: blend with the previous output where nothing moved
+    if (uTemporal > 0.0) {
+        vec3 prev = texture2D(uPrev, vTexSamplingCoord).rgb;
+        float diff = abs(dot(g - prev, LUMA));
+        float still = 1.0 - smoothstep(0.02, 0.08, diff);
+        g = mix(g, prev, uTemporal * 0.55 * still);
+    }
+    gl_FragColor = vec4(g, 1.0);
 }
 """
 }

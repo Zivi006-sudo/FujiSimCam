@@ -82,6 +82,9 @@ SIMS = [
  make('eterna', contrast=-0.22, chroma=0.62, shoulder=0.7, toe=0.035,
       bands=((29,18,6,0.95,0),(55,18,2,1.0,0),(142,26,12,0.7,0),(260,28,-8,0.75,0)),
       hi_desat=0.4, sh_tint=(-0.01,-0.004), hi_tint=(0.004,0.008)),
+ make('natural', contrast=0.06, chroma=0.94, shoulder=0.12, toe=0.004,
+      bands=((29,18,1,0.97,0),(55,18,0,0.97,0),(142,26,-2,0.86,-0.01),(195,24,0,0.9,0),(260,28,-2,0.86,-0.01),(330,25,0,0.92,0)),
+      hi_desat=0.25),
  make('eterna_bb', contrast=0.42, chroma=0.36, shoulder=0.3, toe=0.005,
       bands=(), hi_desat=0.3, sh_tint=(-0.004,-0.002)),
 ]

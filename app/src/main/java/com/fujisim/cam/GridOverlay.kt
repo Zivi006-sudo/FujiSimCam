@@ -49,7 +49,8 @@ class GridOverlay @JvmOverloads constructor(
             RectF((w - fw) / 2f, 0f, (w + fw) / 2f, h)
         } else {
             val fh = w / imageAspect
-            RectF(0f, (h - fh) / 2f, w, (h + fh) / 2f)
+            // The viewfinder is top-aligned (like the iPhone camera).
+            RectF(0f, 0f, w, fh)
         }
     }
 

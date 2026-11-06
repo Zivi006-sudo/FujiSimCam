@@ -31,6 +31,11 @@ data class Look(
     val cornerSoft: Float = 0f,     // 0..1
     val denoise: Float = 0.8f,      // light noise reduction before the look, 0..1
     val fineGrain: Boolean = true,  // fine film grain (recipes) vs the original softer, bigger grain (Styles)
+    val vibrance: Float = 0f,
+    val tintS: FloatArray = FloatArray(3),   // colour grading: shadows / midtones / highlights
+    val tintM: FloatArray = FloatArray(3),
+    val tintH: FloatArray = FloatArray(3),
+    val lumSMH: FloatArray = FloatArray(3),
 ) {
     fun withLens(l: LensSettings) = copy(
         mist = l.mist, vignette = l.vignette, halation = l.halation, cornerSoft = l.cornerSoft,
@@ -71,6 +76,11 @@ data class Look(
         "uCornerSoft" to floatArrayOf(cornerSoft),
         "uDenoise" to floatArrayOf(denoise),
         "uFineGrain" to floatArrayOf(if (fineGrain) 1f else 0f),
+        "uVibrance" to floatArrayOf(vibrance),
+        "uTintS" to tintS,
+        "uTintM" to tintM,
+        "uTintH" to tintH,
+        "uLumSMH" to lumSMH,
     )
 
     companion object {
@@ -101,6 +111,31 @@ data class Look(
                 warmth = r.warmth / 10f,
                 glow = r.glow / 10f,
                 lut = r.lut ?: r.film.lut?.let { "asset:$it" },
+            )
+        }
+
+        /** NORMAL mode: clean Natural (or Phone) base + your own grade. */
+        fun fromNormal(n: NormalSettings): Look {
+            val ev = Math.pow(2.0, n.exposure.toDouble()).toFloat()
+            fun tint(x: Float, y: Float): FloatArray {
+                val g = WbWheel.gains(x, y)              // reuse the wheel's colour direction
+                val k = 0.35f                            // gains around 1 -> small additive tint
+                val m = (g[0] + g[1] + g[2]) / 3f
+                return FloatArray(3) { (g[it] - m) * k }
+            }
+            return Look(
+                wb = floatArrayOf(ev, ev, ev),
+                sat = 1f + 0.6f * n.saturation,
+                vibrance = 0.6f * n.vibrance,
+                contrast = 0.4f * n.contrast,
+                highlight = 2.5f * n.highlights,
+                shadow = -2.5f * n.shadows,
+                tintS = tint(n.sx, n.sy),
+                tintM = tint(n.mx, n.my),
+                tintH = tint(n.hx, n.hy),
+                lumSMH = floatArrayOf(n.sl, n.ml, n.hl),
+                lut = if (n.naturalBase) "asset:natural" else null,
+                denoise = 0.8f,
             )
         }
 
