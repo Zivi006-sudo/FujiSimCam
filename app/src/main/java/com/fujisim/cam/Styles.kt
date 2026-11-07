@@ -225,6 +225,14 @@ class AppPrefs(ctx: Context) {
         get() = prefs.getBoolean("histogram", false)
         set(v) { prefs.edit().putBoolean("histogram", v).apply() }
 
+    var autoEv: Boolean
+        get() = prefs.getBoolean("autoEv", true)
+        set(v) { prefs.edit().putBoolean("autoEv", v).apply() }
+
+    var autoClean: Boolean
+        get() = prefs.getBoolean("autoClean", true)
+        set(v) { prefs.edit().putBoolean("autoClean", v).apply() }
+
     var keepOriginals: Boolean
         get() = prefs.getBoolean("keepOriginals", true)
         set(v) { prefs.edit().putBoolean("keepOriginals", v).apply() }

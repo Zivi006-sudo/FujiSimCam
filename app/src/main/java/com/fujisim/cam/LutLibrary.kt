@@ -49,6 +49,32 @@ object LutLibrary {
         return img
     }
 
+    @Synchronized fun put(ref: String, img: LutImage) { cache[ref] = img }
+    @Synchronized fun remove(ref: String) { cache.remove(ref) }
+
+    /** Weighted blend of same-size LUTs (weights are normalised). Null if empty or sizes differ. */
+    fun blend(parts: List<Pair<LutImage, Float>>): LutImage? {
+        if (parts.isEmpty()) return null
+        val n = parts[0].first.size
+        if (parts.any { it.first.size != n }) return null
+        val total = parts.sumOf { it.second.toDouble() }.toFloat().takeIf { it > 0f } ?: return null
+        val count = n * n * n
+        val r = FloatArray(count); val g = FloatArray(count); val b = FloatArray(count)
+        val px = IntArray(count)
+        for ((img, wt) in parts) {
+            img.bitmap.getPixels(px, 0, n * n, 0, 0, n * n, n)
+            val k = wt / total
+            for (i in 0 until count) {
+                val c = px[i]
+                r[i] += (c shr 16 and 255) * k; g[i] += (c shr 8 and 255) * k; b[i] += (c and 255) * k
+            }
+        }
+        for (i in 0 until count) px[i] = Color.argb(255, r[i].roundToInt().coerceIn(0, 255), g[i].roundToInt().coerceIn(0, 255), b[i].roundToInt().coerceIn(0, 255))
+        val bmp = Bitmap.createBitmap(n * n, n, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(px, 0, n * n, 0, 0, n * n, n)
+        return LutImage(n, bmp)
+    }
+
     fun lutDir(ctx: Context): File = File(ctx.filesDir, "luts").apply { mkdirs() }
 
     /** Copy a user-picked .cube into app storage. Returns the "file:" reference, or throws with a readable message. */

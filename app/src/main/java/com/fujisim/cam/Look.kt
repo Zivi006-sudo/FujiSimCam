@@ -37,6 +37,10 @@ data class Look(
     val tintH: FloatArray = FloatArray(3),
     val lumSMH: FloatArray = FloatArray(3),
     val sunGlow: Float = 0f,
+    val rolloff: Float = 0f,       // highlight roll-off to ivory 0..1
+    val sep: Float = 0f,           // colour separation 0..1
+    val accentHue: Float = 0.07f,  // accent hue 0..1 (kept rich by separation)
+    val lightGlow: Float = 0f,     // cream glow from bright areas 0..1
 ) {
     fun withLens(l: LensSettings) = copy(
         mist = l.mist, vignette = l.vignette, halation = l.halation, cornerSoft = l.cornerSoft,
@@ -84,6 +88,10 @@ data class Look(
         "uTintH" to tintH,
         "uLumSMH" to lumSMH,
         "uSunGlow" to floatArrayOf(sunGlow),
+        "uRolloff" to floatArrayOf(rolloff),
+        "uSep" to floatArrayOf(sep),
+        "uAccentHue" to floatArrayOf(accentHue),
+        "uLightGlow" to floatArrayOf(lightGlow),
     )
 
     companion object {

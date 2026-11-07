@@ -40,7 +40,9 @@ import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.ScaleGestureDetector
 import android.view.Surface
+import android.view.TextureView
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -170,6 +172,9 @@ class MainActivity : AppCompatActivity() {
 
     // Low-light: ISO bucket from the live camera results (0 bright .. 3 very dark)
     @Volatile private var isoBucket = 0
+    @Volatile private var isoNow = 100
+    private lateinit var autoTag: TextView
+    private val isAuto get() = family == FUJI && ::live.isInitialized && live.id == AutoFuji.ID
     private val isoDenoise get() = floatArrayOf(0.45f, 0.75f, 1.0f, 1.25f)[isoBucket]
     private val isoTemporal get() = floatArrayOf(0.3f, 0.5f, 0.7f, 0.85f)[isoBucket]
 
@@ -281,6 +286,7 @@ class MainActivity : AppCompatActivity() {
                 mainHandler.post { refreshLook() }
             }
             val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
+            isoNow = iso
             val bucket = when {
                 iso <= 200 -> 0
                 iso <= 800 -> 1
@@ -322,6 +328,57 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Auto Fuji: read the scene ~3 times a second and update the grade
+    private val autoTicker = object : Runnable {
+        override fun run() {
+            mainHandler.postDelayed(this, 330)
+            if (!isAuto) { if (::autoTag.isInitialized) autoTag.visibility = View.GONE; return }
+            autoTag.visibility = if (editing) View.GONE else View.VISIBLE
+            if (recording != null || editing || showOriginal || AutoFuji.locked) return
+            val tv = previewView.getChildAt(0) as? TextureView ?: return
+            val bmp = runCatching { tv.getBitmap(64, 48) }.getOrNull() ?: return
+            val scene = AutoFuji.analyse(bmp)
+            if (AutoFuji.update(this@MainActivity, scene, isoNow, prefs.autoEv, aeLocked, SystemClock.elapsedRealtime())) {
+                refreshLook()
+            }
+            autoTag.text = AutoFuji.label
+        }
+    }
+
+    private fun setupAutoTag() {
+        autoTag = TextView(this).apply {
+            setBackgroundResource(R.drawable.pill)
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            visibility = View.GONE
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            setOnClickListener {
+                AutoFuji.locked = !AutoFuji.locked
+                it.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                setTextColor(if (AutoFuji.locked) Color.parseColor(YELLOW) else Color.WHITE)
+                text = (if (AutoFuji.locked) "🔒 " else "") + AutoFuji.label
+                showInfo(if (AutoFuji.locked) "Auto Fuji locked\n${AutoFuji.detail}" else "Auto Fuji following the scene")
+            }
+        }
+        val parent = recipeInfo.parent as ViewGroup
+        val lp = (recipeInfo.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+            ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = it.marginStart; marginEnd = it.marginEnd; bottomMargin = dp(6)
+            }
+        } ?: ViewGroup.MarginLayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        parent.addView(autoTag, parent.indexOfChild(recipeInfo), copyLayoutParams(recipeInfo.layoutParams, lp))
+    }
+
+    /** Same kind of LayoutParams as [template] (so gravity in a LinearLayout/FrameLayout is kept). */
+    private fun copyLayoutParams(template: ViewGroup.LayoutParams, m: ViewGroup.MarginLayoutParams): ViewGroup.LayoutParams = when (template) {
+        is LinearLayout.LayoutParams -> LinearLayout.LayoutParams(m).apply { gravity = template.gravity }
+        is FrameLayout.LayoutParams -> FrameLayout.LayoutParams(m).apply { gravity = template.gravity }
+        else -> m
+    }
+
     private val fadeInfo = Runnable { recipeInfo.animate().alpha(0f).setDuration(400).start() }
 
     // ------------------------------------------------------------------ Lifecycle
@@ -334,6 +391,7 @@ class MainActivity : AppCompatActivity() {
         grid = findViewById(R.id.grid)
         recipeBar = findViewById(R.id.recipeBar)
         recipeInfo = findViewById(R.id.recipeInfo)
+        setupAutoTag()
         originalBadge = findViewById(R.id.originalBadge)
         recTimer = findViewById(R.id.recTimer)
         shutter = findViewById(R.id.shutter)
@@ -458,6 +516,7 @@ class MainActivity : AppCompatActivity() {
         Choreographer.getInstance().postFrameCallback(grainTicker)
         mainHandler.postDelayed(thumbTicker, 1500)
         mainHandler.postDelayed(histTicker, 800)
+        mainHandler.postDelayed(autoTicker, 500)
     }
 
     override fun onPause() {
@@ -466,6 +525,7 @@ class MainActivity : AppCompatActivity() {
         Choreographer.getInstance().removeFrameCallback(grainTicker)
         mainHandler.removeCallbacks(thumbTicker)
         mainHandler.removeCallbacks(histTicker)
+        mainHandler.removeCallbacks(autoTicker)
         if (recording != null) toggleRecording()
     }
 
@@ -648,6 +708,9 @@ class MainActivity : AppCompatActivity() {
         rows += UiKit.note(this, "Apply the current look (recipe, style or Normal) to any photo in your gallery. " +
             "Tip: long-press the thumbnail next to the shutter. Photos taken in this app keep a clean original, so re-editing them starts from the untouched image.")
         rows += toggleRow("Keep clean originals for re-editing", prefs.keepOriginals) { on -> prefs.keepOriginals = on }
+        rows += UiKit.section(this, "AUTO FUJI")
+        rows += toggleRow("Expose for the highlights (darker shadows)", prefs.autoEv) { on -> prefs.autoEv = on; if (isAuto) refreshLook() }
+        rows += toggleRow("Clean mode automatically in low light", prefs.autoClean) { on -> prefs.autoClean = on }
         val origDir = File(filesDir, "originals")
         val usedMb = (origDir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024 * 1024)
         rows += LinearLayout(this).apply {
@@ -1088,7 +1151,7 @@ class MainActivity : AppCompatActivity() {
     private fun currentLookLabel(): Pair<String, String> = when (family) {
         STYLES -> "${currentStyle.label} style" to styleSummary(styleLive)
         NORMAL -> "Normal" to normal.summary()
-        else -> live.name to live.summary()
+        else -> if (live.id == AutoFuji.ID) "Auto Fuji" to AutoFuji.detail else live.name to live.summary()
     }
 
     private fun extName(m: Int) = when (m) {
@@ -1546,6 +1609,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectRecipe(r: Recipe) {
+        if (r.id == AutoFuji.ID && current.id != AutoFuji.ID) AutoFuji.reset()
         current = r
         live = r
         store.selectedId = r.id
@@ -1608,14 +1672,16 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ Looks
 
     private fun reloadRecipes() {
-        recipes = store.loadCustom() + BuiltIns.list
+        recipes = listOf(AutoFuji.recipe) + store.loadCustom() + BuiltIns.list
     }
 
     /** Build the look for the current family (without lens/WB-wheel/ISO extras). */
     private fun baseLook(): Pair<Look, Pair<Int, Float>> = when (family) {
         STYLES -> Look.fromStyle(currentStyle, styleLive) to (CaptureRequest.CONTROL_AWB_MODE_AUTO to 0f)
         NORMAL -> Look.fromNormal(normal) to (CaptureRequest.CONTROL_AWB_MODE_AUTO to 0f)
-        else -> {
+        else -> if (live.id == AutoFuji.ID) {
+            AutoFuji.look to (CaptureRequest.CONTROL_AWB_MODE_AUTO to AutoFuji.ev)
+        } else {
             val plan = WhiteBalance.plan(live, awbModes, wb.useRecipe)
             Look.fromRecipe(live, plan.gains) to (plan.awbMode to live.ev)
         }
@@ -1644,7 +1710,9 @@ class MainActivity : AppCompatActivity() {
         lensBtn.setTextColor(if (lensOn) Color.parseColor(YELLOW) else Color.WHITE)
         if (showInfoPill) {
             when (family) {
-                FUJI -> {
+                FUJI -> if (live.id == AutoFuji.ID) {
+                    showInfo("Auto Fuji\nReads the light and builds its own Fuji grade · tap the AUTO tag to lock")
+                } else {
                     val credit = if (live.credit.isNotBlank()) "  ·  by ${live.credit}" else ""
                     showInfo("${live.name}$credit\n${live.summary()}")
                 }
@@ -1730,9 +1798,10 @@ class MainActivity : AppCompatActivity() {
         when (family) {
             FUJI -> {
                 for (r in recipes) {
-                    recipeBar.addView(card(r.id, if (r.builtIn) r.name else "★ ${r.name}", r.id == current.id,
+                    val auto = r.id == AutoFuji.ID
+                    recipeBar.addView(card(r.id, if (auto) "✦ Auto" else if (r.builtIn) r.name else "★ ${r.name}", r.id == current.id,
                         { if (r.id == current.id) refreshLook(showInfoPill = true) else selectRecipe(r) },
-                        { selectRecipe(r); openEditor() }))
+                        if (auto) null else { { selectRecipe(r); openEditor() } }))
                 }
                 recipeBar.addView(card(null, "Add recipe", false, { showAddRecipeMenu() }, null))
             }
@@ -1781,7 +1850,9 @@ class MainActivity : AppCompatActivity() {
         val cropped = imageCrop(frame)
         val small = Bitmap.createScaledBitmap(cropped, 132, (132f * cropped.height / cropped.width).roundToInt().coerceAtLeast(1), true)
         val jobs: List<Pair<String, Look>> = when (family) {
-            FUJI -> recipes.map { r -> r.id to Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, wb.useRecipe).gains).copy(grain = 0f) }
+            FUJI -> recipes.map { r ->
+                r.id to (if (r.id == AutoFuji.ID) AutoFuji.look else Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, wb.useRecipe).gains)).copy(grain = 0f)
+            }
             NORMAL -> (listOf(NormalSettings()) + prefs.normalPresets.map { it.settings })
                 .mapIndexed { i, s -> "preset:$i" to Look.fromNormal(s) }
             else -> emptyList()
@@ -1842,6 +1913,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun openEditor() {
         if (recording != null) return
+        if (isAuto) {
+            showInfo("Auto Fuji sets itself from the scene\nTap the AUTO tag to lock the current look · LENS and WB still apply")
+            return
+        }
         val view = when (family) {
             STYLES -> StylePanel(this, currentStyle, styleLive,
                 onChange = { s ->
@@ -1979,6 +2054,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun takePhoto() {
         if (extMode == CLEAN_MODE) { takeCleanPhoto(); return }
+        if (isAuto && prefs.autoClean && extMode == ExtensionMode.NONE && !rawMode &&
+            lensFacing == CameraSelector.LENS_FACING_BACK && isoNow >= 1000 && AutoFuji.motion < 0.03f) {
+            showInfo("Auto Fuji: low light → Clean mode")
+            takeCleanPhoto(); return
+        }
         if (rawMode && extMode == ExtensionMode.NONE && lensFacing == CameraSelector.LENS_FACING_BACK) {
             takeRawPhoto(); return
         }

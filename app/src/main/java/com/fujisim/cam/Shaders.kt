@@ -54,6 +54,10 @@ uniform vec3 uTintH;
 uniform vec3 uLumSMH;
 uniform float uZebra;
 uniform float uSunGlow;
+uniform float uRolloff;
+uniform float uSep;
+uniform float uAccentHue;
+uniform float uLightGlow;
 """
 
     private const val CORE = """
@@ -183,7 +187,7 @@ vec3 grade(vec3 orig, vec2 p) {
     // Wide gather for glow (light halos), mist (Pro-Mist diffusion) and halation
     vec3 bloom = vec3(0.0);
     vec3 wide = vec3(0.0);
-    if (uGlow > 0.0 || uMist > 0.0 || uHalation > 0.0 || uSunGlow > 0.0) {
+    if (uGlow > 0.0 || uMist > 0.0 || uHalation > 0.0 || uSunGlow > 0.0 || uLightGlow > 0.0) {
         float g1 = 7.0 * s;
         float g2 = 22.0 * s;
         float g3 = g2 * 0.7071;
@@ -258,6 +262,33 @@ vec3 grade(vec3 orig, vec2 p) {
     float gwM = max(0.0, 1.0 - gwS - gwH);
     c += uTintS * gwS + uTintM * gwM + uTintH * gwH;
     c += vec3(uLumSMH.x * gwS + uLumSMH.y * gwM + uLumSMH.z * gwH) * 0.18;
+
+    // Colour separation: colour lives in the mid-tones and in one accent hue; the rest is calmed
+    if (uSep > 0.0) {
+        float Ls = dot(c, LUMA);
+        vec3 hs = rgb2hsv(clamp(c, 0.0, 1.0));
+        float dh = abs(fract(hs.x - uAccentHue + 0.5) - 0.5);
+        float near = 1.0 - smoothstep(0.05, 0.15, dh);
+        float tonal = smoothstep(0.04, 0.3, Ls) * (1.0 - smoothstep(0.72, 1.0, Ls));
+        float k = mix(1.0 - 0.28 * uSep, 1.0 + 0.22 * uSep, near) * mix(1.0 - 0.4 * uSep, 1.0 + 0.1 * uSep, tonal);
+        c = vec3(Ls) + (c - vec3(Ls)) * k;
+    }
+
+    // Highlight roll-off: bright areas ease into warm ivory instead of clipping to pure white
+    if (uRolloff > 0.0) {
+        vec3 ov = max(c - vec3(0.62), vec3(0.0));
+        c = min(c, vec3(0.62)) + ov / (vec3(1.0) + ov * (0.6 * uRolloff / 0.38));
+        float Lr = dot(c, LUMA);
+        c *= mix(vec3(1.0), vec3(1.0, 0.975, 0.915), smoothstep(0.55, 0.95, Lr) * uRolloff);
+    }
+
+    // Light glow: wide, soft cream glow from the brightest areas ("holy light"), mid-tones untouched
+    if (uLightGlow > 0.0) {
+        float lw2 = dot(wide, LUMA);
+        float lm = smoothstep(0.58, 0.92, lw2);
+        vec3 lg = wide * vec3(1.0, 0.95, 0.84) * lm * uLightGlow * 0.55;
+        c = vec3(1.0) - (vec3(1.0) - c) * (vec3(1.0) - lg);
+    }
 
     // Sun glow: soft golden bloom only where the scene is bright and warm (sunlit), shadows kept clean and cool
     if (uSunGlow > 0.0) {
