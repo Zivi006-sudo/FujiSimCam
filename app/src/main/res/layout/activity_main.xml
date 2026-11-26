@@ -269,11 +269,19 @@
             <TextView android:id="@+id/compareBtn" style="@style/TopIcon" android:text="A|B" android:textSize="11sp"
                 android:textStyle="bold" />
 
-            <LinearLayout
-                android:id="@+id/modeBar"
+            <HorizontalScrollView
+                android:id="@+id/modeScroll"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
+                android:fillViewport="true"
+                android:scrollbars="none"
+                android:overScrollMode="never">
+
+            <LinearLayout
+                android:id="@+id/modeBar"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
                 android:gravity="center"
                 android:orientation="horizontal">
 
@@ -283,6 +291,7 @@
                 <TextView android:id="@+id/modeNormal" style="@style/ModeItem" android:text="NORMAL" />
                 <TextView android:id="@+id/modePassport" style="@style/ModeItem" android:text="ID" />
             </LinearLayout>
+            </HorizontalScrollView>
 
             <TextView android:id="@+id/editBtn" style="@style/TopIcon" android:text="✎" />
         </LinearLayout>

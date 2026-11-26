@@ -44,6 +44,7 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.graphics.RectF
 import android.graphics.Paint
 import android.graphics.Canvas
@@ -2133,6 +2134,11 @@ class MainActivity : AppCompatActivity() {
         val idx = currentModeIndex()
         modeViews.forEachIndexed { i, v ->
             v.setTextColor(if (i == idx) Color.parseColor(YELLOW) else Color.parseColor("#BBBBBB"))
+        }
+        // Keep the selected mode visible if the bar is wider than the screen
+        findViewById<HorizontalScrollView>(R.id.modeScroll)?.let { sc ->
+            val v = modeViews[idx]
+            sc.post { sc.smoothScrollTo((v.left - (sc.width - v.width) / 2).coerceAtLeast(0), 0) }
         }
         gridBtn.setTextColor(if (grid.mode != GridOverlay.Mode.OFF) Color.parseColor(YELLOW) else Color.WHITE)
         familyBtn.visibility = if (videoMode) View.VISIBLE else View.GONE

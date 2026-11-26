@@ -11,7 +11,7 @@ android {
         applicationId = "com.fujisim.cam"
         minSdk = 33
         targetSdk = 34
-        versionCode = 8
+        versionCode = 9
         versionName = "2.0"
     }
 
