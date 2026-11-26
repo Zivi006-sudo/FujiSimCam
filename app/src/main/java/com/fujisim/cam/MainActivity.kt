@@ -365,9 +365,14 @@ class MainActivity : AppCompatActivity() {
             val k = 3
             val small = Bitmap.createScaledBitmap(full, (full.width / k).coerceAtLeast(1), (full.height / k).coerceAtLeast(1), true)
             passportCheckBusy = true
-            Passport.fast.process(InputImage.fromBitmap(small, 0))
-                .addOnSuccessListener { faces -> evaluatePassportPose(faces, k.toFloat()) }
-                .addOnCompleteListener { passportCheckBusy = false }
+            try {
+                Passport.fast.process(InputImage.fromBitmap(small, 0))
+                    .addOnSuccessListener { faces -> runCatching { evaluatePassportPose(faces, k.toFloat()) } }
+                    .addOnCompleteListener { passportCheckBusy = false }
+            } catch (e: Throwable) {
+                passportCheckBusy = false
+                passportOverlay.hint = "Face check unavailable"
+            }
         }
     }
 
@@ -2157,7 +2162,7 @@ class MainActivity : AppCompatActivity() {
         nightBtn.setTextColor(if (extMode != ExtensionMode.NONE) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
         rawBtn.visibility = if (!videoMode && !passport && lensFacing == CameraSelector.LENS_FACING_BACK) View.VISIBLE else View.GONE
         rawBtn.setTextColor(if (rawMode) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
-        familyBtn.text = "${FAMILY_NAMES[family]} ▾"
+        familyBtn.text = "${FAMILY_NAMES.getOrElse(family) { "FUJI" }} ▾"
         logBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
         logBtn.text = when {
             !logMode -> "LOG"
