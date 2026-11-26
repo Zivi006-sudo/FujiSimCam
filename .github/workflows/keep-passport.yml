@@ -1,0 +1,43 @@
+name: Keep saved build (passport update, gold look)
+
+# Rebuilds the app exactly as it was after the Passport / ID update (commit a1dd0db),
+# as a separate app ("FujiSim Gold", com.fujisim.cam.gold) so it installs next to the main app.
+on:
+  push:
+    paths:
+      - .github/workflows/keep-passport.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a1dd0db
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Make it a separate app
+        run: |
+          sed -i 's/applicationId = "com.fujisim.cam"/applicationId = "com.fujisim.cam.gold"/' app/build.gradle.kts
+          sed -i 's/android:label="FujiSim Cam"/android:label="FujiSim Gold"/' app/src/main/AndroidManifest.xml
+          grep -n applicationId app/build.gradle.kts
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --console=plain
+      - name: Publish as a saved release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk FujiSimGold.apk
+          gh release delete saved-gold -y --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create saved-gold FujiSimGold.apk -R "$GITHUB_REPOSITORY" --target a1dd0db --latest=false \
+            --title "Saved: FujiSim Gold (passport update, 25 Nov)" \
+            --notes "The app as it was right after the Passport / ID update, before the deep-blacks change. Installs as a separate app called FujiSim Gold."

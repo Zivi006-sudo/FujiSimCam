@@ -315,7 +315,7 @@ vec3 grade(vec3 orig, vec2 p) {
     }
 
     // Glow, tinted warm like film halation
-    c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55) * smoothstep(0.25, 0.7, dot(c, LUMA));
+    c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55) * smoothstep(0.1, 0.45, dot(c, LUMA));
 
     // Halation: red-orange fringe around bright edges
     float bpHere = dot(brightPass(orig), LUMA);

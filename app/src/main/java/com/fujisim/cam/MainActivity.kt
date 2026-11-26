@@ -185,8 +185,8 @@ class MainActivity : AppCompatActivity() {
         if (i in Passport.SPECS.indices) Passport.SPECS[i] else customSpec() }
     private val isAuto get() = family == FUJI && ::live.isInitialized && live.id == AutoFuji.ID
     private val isoDenoise get() = floatArrayOf(0.45f, 0.75f, 1.0f, 1.25f)[isoBucket]
-    /** Smart WB: recipe white balance outdoors in good light (ISO ≤ 200), camera auto WB indoors / in low light. */
-    private val useRecipeWbNow get() = wb.useRecipe || isoBucket == 0
+    /** WB·R = the recipe's fixed white balance; otherwise auto WB with the recipe's warmth/shift on top. */
+    private val useRecipeWbNow get() = wb.useRecipe
     private val isoTemporal get() = floatArrayOf(0.3f, 0.5f, 0.7f, 0.85f)[isoBucket]
 
     // Camera
