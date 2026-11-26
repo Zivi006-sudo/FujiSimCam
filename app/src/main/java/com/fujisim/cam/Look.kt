@@ -41,6 +41,8 @@ data class Look(
     val sep: Float = 0f,           // colour separation 0..1
     val accentHue: Float = 0.07f,  // accent hue 0..1 (kept rich by separation)
     val lightGlow: Float = 0f,     // cream glow from bright areas 0..1
+    val black: Float = 0f,         // black point / film toe 0..0.25
+    val warmBlack: Float = 0f,     // deep shadows towards warm brown-black 0..1
 ) {
     fun withLens(l: LensSettings) = copy(
         mist = l.mist, vignette = l.vignette, halation = l.halation, cornerSoft = l.cornerSoft,
@@ -92,6 +94,8 @@ data class Look(
         "uSep" to floatArrayOf(sep),
         "uAccentHue" to floatArrayOf(accentHue),
         "uLightGlow" to floatArrayOf(lightGlow),
+        "uBlack" to floatArrayOf(black),
+        "uWarmBlack" to floatArrayOf(warmBlack),
     )
 
     companion object {
@@ -123,6 +127,9 @@ data class Look(
                 glow = r.glow / 10f,
                 lut = r.lut ?: r.film.lut?.let { "asset:$it" },
                 sunGlow = r.sunGlow / 10f,
+                // Fuji renders deeper, warmer blacks than a phone: a real toe, more with harder shadow settings
+                black = if (p.mono) 0.05f else (0.09f + 0.03f * r.shadow).coerceIn(0f, 0.22f),
+                warmBlack = if (p.mono || r.wbB > 0 || r.kelvin < 4500) 0.15f else 0.6f,
             )
         }
 

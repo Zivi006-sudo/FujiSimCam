@@ -185,6 +185,8 @@ class MainActivity : AppCompatActivity() {
         if (i in Passport.SPECS.indices) Passport.SPECS[i] else customSpec() }
     private val isAuto get() = family == FUJI && ::live.isInitialized && live.id == AutoFuji.ID
     private val isoDenoise get() = floatArrayOf(0.45f, 0.75f, 1.0f, 1.25f)[isoBucket]
+    /** Smart WB: recipe white balance outdoors in good light (ISO ≤ 200), camera auto WB indoors / in low light. */
+    private val useRecipeWbNow get() = wb.useRecipe || isoBucket == 0
     private val isoTemporal get() = floatArrayOf(0.3f, 0.5f, 0.7f, 0.85f)[isoBucket]
 
     // Camera
@@ -1755,7 +1757,7 @@ class MainActivity : AppCompatActivity() {
         else -> if (live.id == AutoFuji.ID) {
             AutoFuji.look to (CaptureRequest.CONTROL_AWB_MODE_AUTO to AutoFuji.ev)
         } else {
-            val plan = WhiteBalance.plan(live, awbModes, wb.useRecipe)
+            val plan = WhiteBalance.plan(live, awbModes, useRecipeWbNow)
             Look.fromRecipe(live, plan.gains) to (plan.awbMode to live.ev)
         }
     }
@@ -2112,7 +2114,7 @@ class MainActivity : AppCompatActivity() {
         val small = Bitmap.createScaledBitmap(cropped, 132, (132f * cropped.height / cropped.width).roundToInt().coerceAtLeast(1), true)
         val jobs: List<Pair<String, Look>> = when (family) {
             FUJI -> recipes.map { r ->
-                r.id to (if (r.id == AutoFuji.ID) AutoFuji.look else Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, wb.useRecipe).gains)).copy(grain = 0f)
+                r.id to (if (r.id == AutoFuji.ID) AutoFuji.look else Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, useRecipeWbNow).gains)).copy(grain = 0f)
             }
             NORMAL -> (listOf(NormalSettings()) + prefs.normalPresets.map { it.settings })
                 .mapIndexed { i, s -> "preset:$i" to Look.fromNormal(s) }

@@ -222,6 +222,8 @@ object AutoFuji {
             sep = (0.45f + 0.25f * m.sun + 0.2f * m.lightShadow - 0.2f * m.people).coerceIn(0f, 0.9f),
             accentHue = m.accentHue,
             lightGlow = 0.15f + 0.3f * m.sun * (1f - m.golden) + 0.15f * m.lightShadow,
+            black = (0.08f + 0.06f * m.sun + 0.06f * m.lightShadow - 0.06f * m.night).coerceIn(0.02f, 0.2f),
+            warmBlack = 0.7f - 0.3f * m.night,
         )
         if (lookDiff(look, newLook) > 0.02f) { look = newLook; changed = true }
 
@@ -257,7 +259,7 @@ object AutoFuji {
     private fun lookDiff(a: Look, b: Look): Float =
         abs(a.highlight - b.highlight) / 4f + abs(a.shadow - b.shadow) / 4f + abs(a.sat - b.sat) +
             abs(a.warmth - b.warmth) + abs(a.sunGlow - b.sunGlow) + abs(a.rolloff - b.rolloff) +
-            abs(a.sep - b.sep) + abs(a.lightGlow - b.lightGlow) + abs(a.chrome - b.chrome) / 2f +
+            abs(a.sep - b.sep) + abs(a.lightGlow - b.lightGlow) + abs(a.black - b.black) * 3f + abs(a.chrome - b.chrome) / 2f +
             min(abs(a.accentHue - b.accentHue), 1f - abs(a.accentHue - b.accentHue)) * 2f +
             (if (a.lut != b.lut) 1f else 0f)
 }
