@@ -17,7 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: a1dd0db
+          ref: a1dd0dbbc884ab1f9754903e4122724a4391b5d5
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -38,6 +39,6 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk FujiSimGold.apk
           gh release delete saved-gold -y --cleanup-tag -R "$GITHUB_REPOSITORY" || true
-          gh release create saved-gold FujiSimGold.apk -R "$GITHUB_REPOSITORY" --target a1dd0db --latest=false \
+          gh release create saved-gold FujiSimGold.apk -R "$GITHUB_REPOSITORY" --target a1dd0dbbc884ab1f9754903e4122724a4391b5d5 --latest=false \
             --title "Saved: FujiSim Gold (passport update, 25 Nov)" \
             --notes "The app as it was right after the Passport / ID update, before the deep-blacks change. Installs as a separate app called FujiSim Gold."
