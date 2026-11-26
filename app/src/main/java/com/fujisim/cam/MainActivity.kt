@@ -44,10 +44,6 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.graphics.RectF
-import android.graphics.Paint
-import android.graphics.Canvas
-import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -115,7 +111,6 @@ class MainActivity : AppCompatActivity() {
         const val FUJI = 0
         const val STYLES = 1
         const val NORMAL = 2
-        const val PASSPORT = 3
         val FAMILY_NAMES = arrayOf("FUJI", "STYLES", "NORMAL")
         const val YELLOW = "#FFC94A"
         const val CLEAN_MODE = -100        // our own burst-merge mode, shares the ☾ button with Xiaomi's modes
@@ -179,14 +174,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var isoBucket = 0
     @Volatile private var isoNow = 100
     private lateinit var autoTag: TextView
-    private lateinit var passportOverlay: PassportOverlay
-    @Volatile private var passportCheckBusy = false
-    private val passportSpec: PhotoSpec get() = prefs.passportSpec.let { i ->
-        if (i in Passport.SPECS.indices) Passport.SPECS[i] else customSpec() }
     private val isAuto get() = family == FUJI && ::live.isInitialized && live.id == AutoFuji.ID
     private val isoDenoise get() = floatArrayOf(0.45f, 0.75f, 1.0f, 1.25f)[isoBucket]
-    /** WB·R = the recipe's fixed white balance; otherwise auto WB with the recipe's warmth/shift on top. */
-    private val useRecipeWbNow get() = wb.useRecipe
     private val isoTemporal get() = floatArrayOf(0.3f, 0.5f, 0.7f, 0.85f)[isoBucket]
 
     // Camera
@@ -356,54 +345,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Passport: live pose check against the on-screen guide
-    private val passportTicker = object : Runnable {
-        override fun run() {
-            mainHandler.postDelayed(this, 600)
-            if (family != PASSPORT || videoMode || passportCheckBusy || editing) return
-            passportOverlay.imageRect = grid.frame()
-            val full = runCatching { previewView.bitmap }.getOrNull() ?: return
-            val k = 3
-            val small = Bitmap.createScaledBitmap(full, (full.width / k).coerceAtLeast(1), (full.height / k).coerceAtLeast(1), true)
-            passportCheckBusy = true
-            Passport.fast.process(InputImage.fromBitmap(small, 0))
-                .addOnSuccessListener { faces -> evaluatePassportPose(faces, k.toFloat()) }
-                .addOnCompleteListener { passportCheckBusy = false }
-        }
-    }
-
-    private fun evaluatePassportPose(faces: List<com.google.mlkit.vision.face.Face>, k: Float) {
-        val f = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
-        val frame = passportOverlay.frame()
-        val head = passportOverlay.headRect()
-        val (hint, good) = if (f == null) "Face the camera" to false else {
-            val b = f.boundingBox
-            val bh = b.height() * k
-            val expected = head.height() / 1.32f
-            val cx = b.exactCenterX() * k; val cy = b.exactCenterY() * k
-            val ecy = head.bottom - expected / 2f
-            val ratio = bh / expected
-            when {
-                ratio < 0.85f -> "Move closer" to false
-                ratio > 1.15f -> "Move back a little" to false
-                abs(cx - head.centerX()) > frame.width() * 0.07f -> "Centre your face in the outline" to false
-                abs(cy - ecy) > frame.height() * 0.06f -> "Line your eyes up with the dashed line" to false
-                else -> (Passport.check(f) ?: "Looks good ✓  Take the photo") to (Passport.check(f) == null)
-            }
-        }
-        passportOverlay.hint = hint
-        passportOverlay.good = good
-    }
-
-    private fun customSpec(): PhotoSpec {
-        val parts = prefs.passportCustom.split("x").mapNotNull { it.trim().toFloatOrNull() }
-        val w = parts.getOrNull(0)?.coerceIn(15f, 120f) ?: 35f
-        val h = parts.getOrNull(1)?.coerceIn(15f, 120f) ?: 45f
-        return PhotoSpec("Custom ${fmtMm(w)}×${fmtMm(h)} mm", w, h, 0.70f, 0.09f)
-    }
-
-    private fun fmtMm(v: Float) = if (v % 1f == 0f) v.toInt().toString() else "%.1f".format(v)
-
     private fun setupAutoTag() {
         autoTag = TextView(this).apply {
             setBackgroundResource(R.drawable.pill)
@@ -448,9 +389,6 @@ class MainActivity : AppCompatActivity() {
 
         previewView = findViewById(R.id.preview)
         grid = findViewById(R.id.grid)
-        passportOverlay = PassportOverlay(this).apply { visibility = View.GONE }
-        (grid.parent as ViewGroup).let { it.addView(passportOverlay, it.indexOfChild(grid) + 1,
-            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)) }
         recipeBar = findViewById(R.id.recipeBar)
         recipeInfo = findViewById(R.id.recipeInfo)
         setupAutoTag()
@@ -468,7 +406,7 @@ class MainActivity : AppCompatActivity() {
         familyBtn = findViewById(R.id.familyBtn)
         logBtn = findViewById(R.id.logBtn)
         modeViews = listOf(findViewById(R.id.modeVideo), findViewById(R.id.modeFuji),
-            findViewById(R.id.modeStyles), findViewById(R.id.modeNormal), findViewById(R.id.modePassport))
+            findViewById(R.id.modeStyles), findViewById(R.id.modeNormal))
         processingOverlay = findViewById(R.id.processingOverlay)
         processingText = findViewById(R.id.processingText)
         processingBar = findViewById(R.id.processingBar)
@@ -579,7 +517,6 @@ class MainActivity : AppCompatActivity() {
         mainHandler.postDelayed(thumbTicker, 1500)
         mainHandler.postDelayed(histTicker, 800)
         mainHandler.postDelayed(autoTicker, 500)
-        mainHandler.postDelayed(passportTicker, 700)
     }
 
     override fun onPause() {
@@ -589,7 +526,6 @@ class MainActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(thumbTicker)
         mainHandler.removeCallbacks(histTicker)
         mainHandler.removeCallbacks(autoTicker)
-        mainHandler.removeCallbacks(passportTicker)
         if (recording != null) toggleRecording()
     }
 
@@ -675,7 +611,7 @@ class MainActivity : AppCompatActivity() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
                 if (abs(velocityX) < abs(velocityY)) return false
                 val idx = currentModeIndex() + if (velocityX < 0) 1 else -1
-                if (idx in 0..4) selectModeIndex(idx)
+                if (idx in 0..3) selectModeIndex(idx)
                 return true
             }
         })
@@ -688,10 +624,7 @@ class MainActivity : AppCompatActivity() {
         if (recording != null || i == currentModeIndex()) return
         modeViews[i].performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         if (editing) closeEditor()
-        if (i == 0) {
-            if (family == PASSPORT) setFamily(FUJI, keepVideo = false)
-            setVideoMode(true)
-        } else setFamily(i - 1, keepVideo = false)
+        if (i == 0) setVideoMode(true) else setFamily(i - 1, keepVideo = false)
     }
 
     private fun setFamily(f: Int, keepVideo: Boolean) {
@@ -1218,7 +1151,6 @@ class MainActivity : AppCompatActivity() {
     private fun currentLookLabel(): Pair<String, String> = when (family) {
         STYLES -> "${currentStyle.label} style" to styleSummary(styleLive)
         NORMAL -> "Normal" to normal.summary()
-        PASSPORT -> "Passport photo" to passportSpec.label
         else -> if (live.id == AutoFuji.ID) "Auto Fuji" to AutoFuji.detail else live.name to live.summary()
     }
 
@@ -1659,12 +1591,6 @@ class MainActivity : AppCompatActivity() {
     private fun stepLook(dir: Int) {
         previewView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         when (family) {
-            PASSPORT -> {
-                val cols = Passport.COLORS.map { it.second }
-                val i = cols.indexOf(prefs.passportBg)
-                prefs.passportBg = cols[((if (i < 0) 0 else i) + dir + cols.size) % cols.size]
-                passportChanged()
-            }
             STYLES -> {
                 val all = PhotoStyle.values()
                 selectStyle(all[(currentStyle.ordinal + dir + all.size) % all.size])
@@ -1753,11 +1679,10 @@ class MainActivity : AppCompatActivity() {
     private fun baseLook(): Pair<Look, Pair<Int, Float>> = when (family) {
         STYLES -> Look.fromStyle(currentStyle, styleLive) to (CaptureRequest.CONTROL_AWB_MODE_AUTO to 0f)
         NORMAL -> Look.fromNormal(normal) to (CaptureRequest.CONTROL_AWB_MODE_AUTO to 0f)
-        PASSPORT -> Look(denoise = 0f) to (CaptureRequest.CONTROL_AWB_MODE_AUTO to 0f)
         else -> if (live.id == AutoFuji.ID) {
             AutoFuji.look to (CaptureRequest.CONTROL_AWB_MODE_AUTO to AutoFuji.ev)
         } else {
-            val plan = WhiteBalance.plan(live, awbModes, useRecipeWbNow)
+            val plan = WhiteBalance.plan(live, awbModes, wb.useRecipe)
             Look.fromRecipe(live, plan.gains) to (plan.awbMode to live.ev)
         }
     }
@@ -1777,7 +1702,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshLook(showInfoPill: Boolean = false) {
         val (base, cam) = baseLook()
         applyCameraSettings(cam.first, cam.second)
-        lookNow = if (family == PASSPORT) base else finishLook(base)
+        lookNow = finishLook(base)
         lutNow = LutLibrary.get(this, lookNow.lut)
         wbBtn.text = if (wb.useRecipe && family == FUJI) "WB·R" else "WB"
         wbBtn.setTextColor(if (wb.wheelX != 0f || wb.wheelY != 0f || (wb.useRecipe && family == FUJI)) Color.parseColor(YELLOW) else Color.WHITE)
@@ -1792,7 +1717,6 @@ class MainActivity : AppCompatActivity() {
                     showInfo("${live.name}$credit\n${live.summary()}")
                 }
                 NORMAL -> showInfo("NORMAL\n${normal.summary()}")
-                PASSPORT -> showInfo("PASSPORT / ID PHOTO\nPlain wall, even light, look straight · the background is replaced")
                 else -> {}
             }
         }
@@ -1890,196 +1814,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 recipeBar.addView(card(null, "Adjust", false, { openEditor() }, null))
             }
-            PASSPORT -> {
-                val spec = passportSpec
-                Passport.SPECS.forEachIndexed { i, sp ->
-                    recipeBar.addView(card("size:$i", sp.label, prefs.passportSpec == i,
-                        { prefs.passportSpec = i; passportChanged() }, null))
-                    cardThumbs["size:$i"]?.setImageBitmap(swatch(Color.TRANSPARENT, sp.aspect))
-                }
-                recipeBar.addView(card("size:custom", "Custom size", prefs.passportSpec == -1,
-                    { askCustomSize() }, null))
-                cardThumbs["size:custom"]?.setImageBitmap(swatch(Color.TRANSPARENT, customSpec().aspect))
-                val bg = prefs.passportBg
-                var matched = false
-                Passport.COLORS.forEachIndexed { i, (name, c) ->
-                    if (c == bg) matched = true
-                    recipeBar.addView(card("bg:$i", name, c == bg, { prefs.passportBg = c; passportChanged() }, null))
-                    cardThumbs["bg:$i"]?.setImageBitmap(swatch(c, spec.aspect))
-                }
-                recipeBar.addView(card("bg:custom", "Custom colour", !matched, { askCustomColour() }, null))
-                cardThumbs["bg:custom"]?.setImageBitmap(swatch(if (matched) Color.DKGRAY else bg, spec.aspect))
-            }
             else -> {}
         }
         mainHandler.postDelayed({ refreshThumbnails() }, 300)
-    }
-
-    private fun passportChanged() {
-        passportOverlay.spec = passportSpec
-        rebuildChips()
-        showInfo("${passportSpec.label} · ${Passport.COLORS.firstOrNull { it.second == prefs.passportBg }?.first ?: "custom"} background")
-    }
-
-    /** Card picture: a rectangle of the photo's shape, filled with [color] (or outlined if transparent). */
-    private fun swatch(color: Int, aspect: Float): Bitmap {
-        val w = dp(66); val h = dp(50)
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val cv = Canvas(bmp)
-        var rh = h * 0.72f; var rw = rh * aspect
-        if (rw > w * 0.8f) { rw = w * 0.8f; rh = rw / aspect }
-        val r = RectF((w - rw) / 2f, (h - rh) / 2f, (w + rw) / 2f, (h + rh) / 2f)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        if (color == Color.TRANSPARENT) {
-            p.style = Paint.Style.STROKE; p.strokeWidth = dp(2).toFloat(); p.color = Color.WHITE
-            cv.drawRect(r, p)
-            p.style = Paint.Style.FILL; p.color = Color.argb(160, 255, 255, 255)
-            cv.drawOval(RectF(r.centerX() - rw * 0.22f, r.top + rh * 0.12f, r.centerX() + rw * 0.22f, r.top + rh * 0.7f), p)
-        } else {
-            p.color = color
-            cv.drawRect(r, p)
-            p.color = Color.argb(150, 40, 40, 40)
-            cv.drawOval(RectF(r.centerX() - rw * 0.22f, r.top + rh * 0.12f, r.centerX() + rw * 0.22f, r.top + rh * 0.7f), p)
-        }
-        return bmp
-    }
-
-    private fun askCustomSize() {
-        val input = EditText(this).apply {
-            setText(prefs.passportCustom)
-            hint = "width x height in mm, e.g. 35x45"
-            setSingleLine(true)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Custom photo size (mm)")
-            .setMessage("Check the official size for your passport or visa.")
-            .setView(input)
-            .setPositiveButton("Use") { _, _ ->
-                val t = input.text.toString().lowercase(Locale.US).replace("×", "x").replace(" ", "")
-                val ok = t.split("x").size == 2 && t.split("x").all { it.toFloatOrNull() != null }
-                if (ok) { prefs.passportCustom = t; prefs.passportSpec = -1; passportChanged() }
-                else Toast.makeText(this, "Use the form 35x45", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun askCustomColour() {
-        var c = prefs.passportBg
-        val preview = View(this).apply { setBackgroundColor(c) }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
-        col.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)))
-        listOf("Red" to 16, "Green" to 8, "Blue" to 0).forEach { (name, shift) ->
-            col.addView(TextView(this).apply { text = name; setPadding(0, dp(10), 0, 0) })
-            col.addView(SeekBar(this).apply {
-                max = 255
-                progress = (c shr shift) and 255
-                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(sb: SeekBar?, v: Int, fromUser: Boolean) {
-                        c = (c and (0xFF shl shift).inv()) or (v shl shift) or (0xFF shl 24)
-                        preview.setBackgroundColor(c)
-                    }
-                    override fun onStartTrackingTouch(sb: SeekBar?) {}
-                    override fun onStopTrackingTouch(sb: SeekBar?) {}
-                })
-            })
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Background colour")
-            .setView(col)
-            .setPositiveButton("Use") { _, _ -> prefs.passportBg = c or (0xFF shl 24); passportChanged() }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun takePassportPhoto() {
-        val capture = imageCapture ?: return
-        val spec = passportSpec
-        val bg = prefs.passportBg
-        shutter.isEnabled = false
-        flash.alpha = 0.85f
-        flash.animate().alpha(0f).setDuration(250).start()
-        processingOverlay.visibility = View.VISIBLE
-        processingBar.isIndeterminate = true
-        processingText.text = "Making your passport photo…"
-        fun done() { processingOverlay.visibility = View.GONE; processingBar.isIndeterminate = false; shutter.isEnabled = true }
-        capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
-            override fun onCaptureSuccess(image: ImageProxy) {
-                try {
-                    val rotation = image.imageInfo.rotationDegrees
-                    val raw = try { image.toBitmap() } finally { image.close() }
-                    var src = raw
-                    if (rotation != 0) {
-                        src = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, Matrix().apply { postRotate(rotation.toFloat()) }, true)
-                        raw.recycle()
-                    }
-                    src = limitSize(src, 4096)
-                    val res = Passport.make(src, spec, bg)
-                    src.recycle()
-                    runOnUiThread { done(); showPassportResult(res, spec) }
-                } catch (e: Throwable) {
-                    runOnUiThread { done(); showInfo("Passport photo\n${e.message ?: "Something went wrong"}") }
-                }
-            }
-            override fun onError(exception: ImageCaptureException) {
-                runOnUiThread { done(); Toast.makeText(this@MainActivity, "Capture failed: ${exception.message}", Toast.LENGTH_LONG).show() }
-            }
-        })
-    }
-
-    private fun showPassportResult(res: Passport.Result, spec: PhotoSpec) {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(16), dp(12), dp(16), 0)
-        }
-        box.addView(ImageView(this).apply {
-            setImageBitmap(res.photo)
-            adjustViewBounds = true
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(300)))
-        box.addView(TextView(this).apply {
-            text = (res.warning?.let { "⚠ $it\n" } ?: "") + "${spec.label} · ${res.photo.width}×${res.photo.height} px at 300 dpi\n" +
-                "Saves the photo plus a 4×6 inch print sheet. Check your country's rules before submitting."
-            textSize = 12f
-            setPadding(0, dp(10), 0, 0)
-        })
-        AlertDialog.Builder(this)
-            .setTitle("Passport photo")
-            .setView(box)
-            .setPositiveButton("Save") { _, _ -> savePassport(res.photo, spec) }
-            .setNegativeButton("Retake", null)
-            .show()
-    }
-
-    private fun savePassport(photo: Bitmap, spec: PhotoSpec) {
-        thumbExecutor.execute {
-            try {
-                val ts = timestamp()
-                val uri = saveJpeg(photo, "Passport photo ${spec.label}", "PASSPORT_$ts.jpg")
-                set300Dpi(uri)
-                val sheet = Passport.sheet(photo)
-                set300Dpi(saveJpeg(sheet, "Passport print sheet ${spec.label} (4x6 in)", "PASSPORT_SHEET_$ts.jpg"))
-                val small = Bitmap.createScaledBitmap(photo, 120, (120f * photo.height / photo.width).roundToInt(), true)
-                runOnUiThread {
-                    lastUri = uri; lastMime = "image/jpeg"
-                    thumb.setImageBitmap(small)
-                    showInfo("Saved passport photo + 4×6 print sheet\nPictures/FujiSim")
-                }
-            } catch (e: Throwable) {
-                runOnUiThread { Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_LONG).show() }
-            }
-        }
-    }
-
-    private fun set300Dpi(uri: Uri) = runCatching {
-        contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
-            val exif = ExifInterface(pfd.fileDescriptor)
-            exif.setAttribute(ExifInterface.TAG_X_RESOLUTION, "300/1")
-            exif.setAttribute(ExifInterface.TAG_Y_RESOLUTION, "300/1")
-            exif.setAttribute(ExifInterface.TAG_RESOLUTION_UNIT, "2")
-            exif.saveAttributes()
-        }
     }
 
     private fun confirmDeletePreset(p: NormalPreset) {
@@ -2114,7 +1851,7 @@ class MainActivity : AppCompatActivity() {
         val small = Bitmap.createScaledBitmap(cropped, 132, (132f * cropped.height / cropped.width).roundToInt().coerceAtLeast(1), true)
         val jobs: List<Pair<String, Look>> = when (family) {
             FUJI -> recipes.map { r ->
-                r.id to (if (r.id == AutoFuji.ID) AutoFuji.look else Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, useRecipeWbNow).gains)).copy(grain = 0f)
+                r.id to (if (r.id == AutoFuji.ID) AutoFuji.look else Look.fromRecipe(r, WhiteBalance.plan(r, awbModes, wb.useRecipe).gains)).copy(grain = 0f)
             }
             NORMAL -> (listOf(NormalSettings()) + prefs.normalPresets.map { it.settings })
                 .mapIndexed { i, s -> "preset:$i" to Look.fromNormal(s) }
@@ -2138,10 +1875,7 @@ class MainActivity : AppCompatActivity() {
         }
         gridBtn.setTextColor(if (grid.mode != GridOverlay.Mode.OFF) Color.parseColor(YELLOW) else Color.WHITE)
         familyBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
-        val passport = family == PASSPORT && !videoMode
-        passportOverlay.visibility = if (passport) View.VISIBLE else View.GONE
-        if (passport) { passportOverlay.spec = passportSpec; passportOverlay.imageRect = grid.frame() }
-        nightBtn.visibility = if (!videoMode && !passport) View.VISIBLE else View.GONE
+        nightBtn.visibility = if (!videoMode) View.VISIBLE else View.GONE
         nightBtn.text = when (extMode) {
             ExtensionMode.NIGHT -> "☾"
             ExtensionMode.HDR -> "HDR"
@@ -2151,7 +1885,7 @@ class MainActivity : AppCompatActivity() {
             else -> "☾"
         }
         nightBtn.setTextColor(if (extMode != ExtensionMode.NONE) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
-        rawBtn.visibility = if (!videoMode && !passport && lensFacing == CameraSelector.LENS_FACING_BACK) View.VISIBLE else View.GONE
+        rawBtn.visibility = if (!videoMode && lensFacing == CameraSelector.LENS_FACING_BACK) View.VISIBLE else View.GONE
         rawBtn.setTextColor(if (rawMode) Color.parseColor(YELLOW) else Color.parseColor("#888888"))
         familyBtn.text = "${FAMILY_NAMES[family]} ▾"
         logBtn.visibility = if (videoMode) View.VISIBLE else View.GONE
@@ -2179,10 +1913,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun openEditor() {
         if (recording != null) return
-        if (family == PASSPORT) {
-            showInfo("PASSPORT / ID PHOTO\nPick the size and background colour in the row below")
-            return
-        }
         if (isAuto) {
             showInfo("Auto Fuji sets itself from the scene\nTap the AUTO tag to lock the current look · LENS and WB still apply")
             return
@@ -2323,7 +2053,6 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ Photo
 
     private fun takePhoto() {
-        if (family == PASSPORT && !videoMode) { takePassportPhoto(); return }
         if (extMode == CLEAN_MODE) { takeCleanPhoto(); return }
         if (isAuto && prefs.autoClean && extMode == ExtensionMode.NONE && !rawMode &&
             lensFacing == CameraSelector.LENS_FACING_BACK && isoNow >= 1000 && AutoFuji.motion < 0.03f) {

@@ -11,7 +11,7 @@ android {
         applicationId = "com.fujisim.cam"
         minSdk = 33
         targetSdk = 34
-        versionCode = 6
+        versionCode = 7
         versionName = "2.0"
     }
 
@@ -39,8 +39,6 @@ dependencies {
     implementation("androidx.camera:camera-video:$camerax")
     implementation("androidx.camera:camera-extensions:$camerax")
     implementation("com.google.mlkit:text-recognition:16.0.1")
-    implementation("com.google.mlkit:face-detection:16.1.7")
-    implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
     val media3 = "1.4.1"
     implementation("androidx.media3:media3-transformer:$media3")
     implementation("androidx.media3:media3-effect:$media3")

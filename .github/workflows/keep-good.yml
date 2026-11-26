@@ -1,0 +1,28 @@
+name: Publish the saved good build
+
+# Publishes saved/FujiSimCam-good.apk byte-for-byte (the user's chosen build: Auto Fuji, 7 Nov).
+on:
+  push:
+    paths:
+      - saved/FujiSimCam-good.apk
+      - .github/workflows/keep-good.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish as release "good-build"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum saved/FujiSimCam-good.apk
+          gh release delete good-build -y --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create good-build saved/FujiSimCam-good.apk -R "$GITHUB_REPOSITORY" --latest=false \
+            --title "Good build (Auto Fuji, 7 Nov) — exact copy" \
+            --notes "Exact copy of the build the user picked as best. The main code was restored to this version (commit 04acd19)."
+          gh release delete saved-gold -y --cleanup-tag -R "$GITHUB_REPOSITORY" || true

@@ -281,7 +281,6 @@
                 <TextView android:id="@+id/modeFuji" style="@style/ModeItem" android:text="FUJI" />
                 <TextView android:id="@+id/modeStyles" style="@style/ModeItem" android:text="STYLES" />
                 <TextView android:id="@+id/modeNormal" style="@style/ModeItem" android:text="NORMAL" />
-                <TextView android:id="@+id/modePassport" style="@style/ModeItem" android:text="ID" />
             </LinearLayout>
 
             <TextView android:id="@+id/editBtn" style="@style/TopIcon" android:text="✎" />

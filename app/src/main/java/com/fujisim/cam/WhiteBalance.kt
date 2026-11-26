@@ -26,18 +26,12 @@ object WhiteBalance {
     fun plan(r: Recipe, available: IntArray?, useRecipeWb: Boolean = true): Plan {
         var mode = CaptureRequest.CONTROL_AWB_MODE_AUTO
         var gains = floatArrayOf(1f, 1f, 1f)
-        val target: Int? = when (r.wb) {
+        val target: Int? = if (!useRecipeWb) null else when (r.wb) {
             WbMode.AUTO -> null
             WbMode.KELVIN -> r.kelvin
             else -> r.wb.kelvin
         }
-        if (target != null && !useRecipeWb) {
-            // Adaptive: the camera's auto WB neutralises the light (sun, cloud, indoors),
-            // then the recipe's character is added on top, measured from neutral daylight (5500K).
-            val a = kelvinLinear(5500)
-            val b = kelvinLinear(target.coerceIn(2500, 10000))
-            gains = floatArrayOf(a[0] / b[0], a[1] / b[1], a[2] / b[2])
-        } else if (target != null) {
+        if (target != null) {
             val t = target.coerceIn(2500, 10000)
             val usable = presets.filter { available == null || available.contains(it.first) }
             val base = usable.minByOrNull { abs(1e6 / it.second - 1e6 / t) }

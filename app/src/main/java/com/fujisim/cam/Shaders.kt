@@ -58,8 +58,6 @@ uniform float uRolloff;
 uniform float uSep;
 uniform float uAccentHue;
 uniform float uLightGlow;
-uniform float uBlack;
-uniform float uWarmBlack;
 """
 
     private const val CORE = """
@@ -253,20 +251,6 @@ vec3 grade(vec3 orig, vec2 p) {
     // Tone curve
     c = toneCurve(c);
 
-    // Black point: a soft film toe that takes the phone's grey shadows down to real black
-    if (uBlack > 0.0) {
-        float Lb = dot(c, LUMA);
-        float om = 1.0 - Lb;
-        float Lb2 = Lb * Lb / (Lb + uBlack * om * om + 1e-5);
-        c *= Lb2 / max(Lb, 1e-4);
-    }
-    // Warm blacks: deep shadows ease towards a warm, nearly colourless brown-black (not teal)
-    if (uWarmBlack > 0.0) {
-        float Lw = dot(c, LUMA);
-        float swk = 1.0 - smoothstep(0.0, 0.45, Lw);
-        c = mix(c, Lw * vec3(1.14, 1.0, 0.76), swk * 0.8 * uWarmBlack);
-    }
-
     // Split toning + golden highlight warmth
     float Lt = dot(c, LUMA);
     c += uShadowTint * (1.0 - smoothstep(0.0, 0.5, Lt)) + uHighTint * smoothstep(0.45, 1.0, Lt);
@@ -301,7 +285,7 @@ vec3 grade(vec3 orig, vec2 p) {
     // Light glow: wide, soft cream glow from the brightest areas ("holy light"), mid-tones untouched
     if (uLightGlow > 0.0) {
         float lw2 = dot(wide, LUMA);
-        float lm = smoothstep(0.58, 0.92, lw2) * smoothstep(0.3, 0.7, dot(c, LUMA));
+        float lm = smoothstep(0.58, 0.92, lw2);
         vec3 lg = wide * vec3(1.0, 0.95, 0.84) * lm * uLightGlow * 0.55;
         c = vec3(1.0) - (vec3(1.0) - c) * (vec3(1.0) - lg);
     }
@@ -309,13 +293,14 @@ vec3 grade(vec3 orig, vec2 p) {
     // Sun glow: soft golden bloom only where the scene is bright and warm (sunlit), shadows kept clean and cool
     if (uSunGlow > 0.0) {
         float lw = dot(wide, LUMA);
-        float sunMask = smoothstep(0.45, 0.85, lw) * smoothstep(0.0, 0.06, wide.r - wide.b) * smoothstep(0.28, 0.68, Lt);
+        float sunMask = smoothstep(0.45, 0.85, lw) * smoothstep(0.0, 0.06, wide.r - wide.b);
         vec3 glowCol = wide * vec3(1.0, 0.86, 0.62) * sunMask * uSunGlow * 0.6;
         c = vec3(1.0) - (vec3(1.0) - c) * (vec3(1.0) - glowCol);
+        c += uSunGlow * (1.0 - smoothstep(0.0, 0.45, Lt)) * vec3(-0.012, 0.004, 0.014);
     }
 
     // Glow, tinted warm like film halation
-    c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55) * smoothstep(0.1, 0.45, dot(c, LUMA));
+    c += uGlow * 0.65 * bloom * vec3(1.0, 0.78, 0.55);
 
     // Halation: red-orange fringe around bright edges
     float bpHere = dot(brightPass(orig), LUMA);

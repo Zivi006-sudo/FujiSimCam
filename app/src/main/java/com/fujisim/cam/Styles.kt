@@ -225,18 +225,6 @@ class AppPrefs(ctx: Context) {
         get() = prefs.getBoolean("histogram", false)
         set(v) { prefs.edit().putBoolean("histogram", v).apply() }
 
-    var passportSpec: Int
-        get() = prefs.getInt("passportSpec", 0)
-        set(v) { prefs.edit().putInt("passportSpec", v).apply() }
-
-    var passportBg: Int
-        get() = prefs.getInt("passportBg", android.graphics.Color.WHITE)
-        set(v) { prefs.edit().putInt("passportBg", v).apply() }
-
-    var passportCustom: String
-        get() = prefs.getString("passportCustom", "35x45") ?: "35x45"
-        set(v) { prefs.edit().putString("passportCustom", v).apply() }
-
     var autoEv: Boolean
         get() = prefs.getBoolean("autoEv", true)
         set(v) { prefs.edit().putBoolean("autoEv", v).apply() }
