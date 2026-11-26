@@ -41,7 +41,7 @@ class GridOverlay @JvmOverloads constructor(
     private val shade = Paint().apply { color = Color.argb(120, 0, 0, 0) }
     private val level = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 5f }
 
-    private fun frame(): RectF {
+    fun frame(): RectF {
         val w = width.toFloat()
         val h = height.toFloat()
         return if (w / h > imageAspect) {
